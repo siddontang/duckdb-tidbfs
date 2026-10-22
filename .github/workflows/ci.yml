@@ -1,111 +1,63 @@
 name: CI
-
 on:
-  push:
-  pull_request:
   workflow_dispatch:
-
+    inputs:
+      binary_run:
+        description: Failed diagnostic run with matching Linux binaries
+        type: string
+        required: true
+      trace_http:
+        description: Capture payload-free HTTP syscalls
+        type: choice
+        options: ['1', '0']
+        default: '1'
 permissions:
   contents: read
-
+  actions: read
 jobs:
-  native-extension:
+  http-reproducer:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 15
     env:
-      DUCKDB_VERSION: v2.0.0
       DUCKDB_AGENT_MODE: '0'
       TIDBFS_GDB_ON_TIMEOUT: '1'
-      TIDBFS_TRACE_HTTP: '1'
+      TIDBFS_TRACE_HTTP: ${{ inputs.trace_http }}
+      BINARY_RUN: ${{ inputs.binary_run }}
+      RUNTIME_SHA: 9619e391f8430774cdb47158afd2350a0fc8cc83
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: bridge/go.mod
-          cache-dependency-path: bridge/go.sum
-      - name: Install build dependencies
+          fetch-depth: 2
+      - name: Verify producer and reuse the exact unchanged runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$BINARY_RUN" in *[!0-9]*|'') exit 1;; esac
+          producer=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BINARY_RUN" --jq .head_sha)
+          test "$producer" = "$RUNTIME_SHA"
+          git diff --exit-code "$producer" HEAD -- src bridge CMakeLists.txt extension_config.cmake scripts/build.py scripts/build_extent.py
+          gh run download "$BINARY_RUN" --name "http-timeout-$BINARY_RUN" --dir build
+      - name: Install matching CLI and network diagnostics
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++ gdb strace cmake libcurl4-openssl-dev unzip
-      - name: Install matching DuckDB CLI and C++ headers
+          sudo apt-get install -y libcurl4-openssl-dev gdb strace
+          mkdir -p "$RUNNER_TEMP/duckdb"
+          curl -fsSL --retry 3 https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-linux-amd64.tar.gz -o "$RUNNER_TEMP/duckdb.tar.gz"
+          printf '%s  %s\n' c6507206baf7793c6013dbd82368469a45f20dc0e17a6f92f204602f652ed2bc "$RUNNER_TEMP/duckdb.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/duckdb.tar.gz" -C "$RUNNER_TEMP/duckdb"
+          echo "DUCKDB=$RUNNER_TEMP/duckdb/duckdb" >> "$GITHUB_ENV"
+          dpkg-query -W libcurl4t64 strace
+          ldd build/tidbfs.duckdb_extension
+      - name: Reproduce the read stall with the original deadline
         run: |
-          mkdir -p "$RUNNER_TEMP/duckdb/bin" "$RUNNER_TEMP/duckdb/source"
-          curl -fsSL --retry 3 "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb-cli-linux-amd64.tar.gz" -o "$RUNNER_TEMP/duckdb/cli.tar.gz"
-          printf '%s  %s\n' c6507206baf7793c6013dbd82368469a45f20dc0e17a6f92f204602f652ed2bc "$RUNNER_TEMP/duckdb/cli.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/duckdb/cli.tar.gz" -C "$RUNNER_TEMP/duckdb/bin"
-          chmod +x "$RUNNER_TEMP/duckdb/bin/duckdb"
-          curl -fsSL --retry 3 "https://github.com/duckdb/duckdb/archive/refs/tags/${DUCKDB_VERSION}.tar.gz" -o "$RUNNER_TEMP/duckdb/source.tar.gz"
-          printf '%s  %s\n' 7e89053255046bfb26afbd7f524a2fb84df7dbef496aa911ea35e4a1182fdc00 "$RUNNER_TEMP/duckdb/source.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/duckdb/source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/duckdb/source"
-          printf 'DUCKDB=%s\nDUCKDB_SOURCE=%s\n' "$RUNNER_TEMP/duckdb/bin/duckdb" "$RUNNER_TEMP/duckdb/source" >> "$GITHUB_ENV"
-      - name: Install matching official Quack extension
-        run: |
-          "$DUCKDB" -bail -c "INSTALL quack FROM 'https://extensions.duckdb.org'; LOAD quack;"
-      - name: Build, load, and test the native extension
-        env:
-          CMAKE_ARGS: -DCURL_LIBRARY=/usr/lib/x86_64-linux-gnu/libcurl.so -DCURL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu
-        run: |
-          make test
-          python3 scripts/install.py --directory "$RUNNER_TEMP/installed-extensions"
-      - name: Stress multipart success and abort with default and constrained async I/O
-        run: |
-          python3 scripts/stress_multipart.py --iterations 30
-          python3 scripts/stress_multipart.py --iterations 30 --async-threads 1
-      - name: Prepare existing upstream filesystem and disposable TiDB
-        run: |
-          python3 -m venv "$RUNNER_TEMP/testenv"
-          "$RUNNER_TEMP/testenv/bin/pip" install pymysql==1.1.1 boto3==1.42.97
-          echo "$RUNNER_TEMP/testenv/bin" >> "$GITHUB_PATH"
-          mkdir -p "$RUNNER_TEMP/tidb"
-          curl -fsSL --retry 3 https://tiup-mirrors.pingcap.com/tidb-v8.5.3-linux-amd64.tar.gz -o "$RUNNER_TEMP/tidb.tar.gz"
-          printf '%s  %s\n' cee71bf941aa36c5f9141cc37f51c63378374539a6eed5eaa6129c4ed7e8ebe4 "$RUNNER_TEMP/tidb.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/tidb.tar.gz" -C "$RUNNER_TEMP/tidb"
-          # A full checkout includes upstream's nested CGO-free codec modules;
-          # Go module zip archives deliberately omit nested modules.
-          source_dir="$RUNNER_TEMP/drive9-source"
-          git init "$source_dir"
-          git -C "$source_dir" remote add origin https://github.com/mem9-ai/drive9.git
-          git -C "$source_dir" fetch --depth=1 origin b529a36f7862c2397968a8e0b13e74b6040486c4
-          git -C "$source_dir" checkout --detach FETCH_HEAD
-          tags=$(python3 -c 'import sys; sys.path.insert(0,"scripts"); from build_extent import TAGS; print(TAGS)')
-          CGO_ENABLED=0 go build -C "$source_dir" -mod=readonly -p=2 -tags "$tags" -o "$RUNNER_TEMP/drive9-server" ./cmd/drive9-server
-          python3 scripts/download_rustfs.py --output "$RUNNER_TEMP/rustfs"
-      - name: Native compatibility on the public upstream server
-        run: |
-          # Full crash/expiry/restart tests target current tidbcloud/fs. Its
-          # private checkout is unavailable to this public repository's CI;
-          # the public upstream server has older stale-session scheduling.
-          python3 scripts/test_native_live.py --tidb-server "$RUNNER_TEMP/tidb/tidb-server" --fs-server "$RUNNER_TEMP/drive9-server" --rustfs-server "$RUNNER_TEMP/rustfs" --skip-restart \
-            NativeDatabaseTests.test_catalog_transactions_checkpoint_reopen \
-            NativeDatabaseTests.test_multiple_databases_and_arbitrary_filename \
-            NativeDatabaseTests.test_extent_files_share_the_normal_namespace \
-            NativeDatabaseTests.test_analytical_extent_scans_exclude_cross_route_writers \
-            NativeDatabaseTests.test_heartbeat_is_fixed_across_uri_routes \
-            NativeDatabaseTests.test_uri_routes_share_one_extent_session \
-            NativeDatabaseTests.test_failed_analytical_extent_query_releases_read_lock \
-            NativeDatabaseTests.test_external_sort_with_remote_temporary_files \
-            NativeDatabaseTests.test_out_of_memory_cleans_up_without_abort \
-            NativeDatabaseTests.test_writer_exclusion_renewal_and_shared_readers \
-            NativeDatabaseTests.test_s3_transient_upload_failure_retries_without_duplication \
-            NativeDatabaseTests.test_s3_successful_upload_with_lost_ack_is_safe_to_retry \
-            NativeDatabaseTests.test_s3_transient_download_failure_recovers_in_fresh_process \
-            NativeDatabaseTests.test_s3_truncated_download_never_returns_partial_query_results
-      - name: Quack multi-client transactions, object faults and clean worker handoff
-        run: |
-          # Crash/partition/ambiguous-write takeover needs current tidbcloud/fs.
-          # The public server's local fallback does not sweep expired sessions.
-          python3 scripts/test_native_live.py --tidb-server "$RUNNER_TEMP/tidb/tidb-server" --fs-server "$RUNNER_TEMP/drive9-server" --rustfs-server "$RUNNER_TEMP/rustfs" --quack-only --log-dir build/quack-live \
-            QuackTests.test_concurrent_clients_commit_and_read \
-            QuackTests.test_conflicting_writers_rollback_and_snapshot \
-            QuackTests.test_clean_worker_handoff_and_readonly_clients \
-            QuackTests.test_transient_object_faults_through_quack
-      - name: Preserve HTTP timeout diagnostics and matching binaries
-        if: failure()
+          "$DUCKDB" -unsigned -bail -c "LOAD 'build/tidbfs.duckdb_extension';"
+          python3 -m unittest discover -s test -v 2>&1 | tee build/http-repro.log
+      - name: Preserve traces
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: http-timeout-${{ github.run_id }}
+          name: http-repro-${{ github.run_id }}
           retention-days: 7
           path: |
             build/http-traces/
-            build/tidbfs.duckdb_extension
-            build/libtidbfs_extent.so
+            build/http-repro.log
