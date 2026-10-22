@@ -101,15 +101,17 @@ jobs:
             uname -a
             for size in 16384 65536 16384; do
               echo "CONTROLLED RECEIVE BUFFER: $size"
+              stage_log=build/http-stage-$size.log
               set +e
-              TIDBFS_TEST_CURL_BUFFER=$size python3 scripts/stress_multipart.py --iterations 15 2>&1 | tee -a build/http-repro.log
+              TIDBFS_TEST_CURL_BUFFER=$size python3 scripts/stress_multipart.py --iterations 15 2>&1 | tee "$stage_log"
               result=${PIPESTATUS[0]}
               set -e
+              cat "$stage_log" >> build/http-repro.log
               if test "$size" = 65536; then
                 test "$result" = 0
               else
                 test "$result" != 0
-                grep -q TimeoutExpired build/http-repro.log
+                grep -q TimeoutExpired "$stage_log"
               fi
             done
             exit 0
