@@ -11,6 +11,11 @@ on:
         type: choice
         options: ['1', '0']
         default: '1'
+      server_nodelay:
+        description: Disable Nagle on the test HTTP server
+        type: choice
+        options: ['0', '1']
+        default: '0'
 permissions:
   contents: read
   actions: read
@@ -22,6 +27,7 @@ jobs:
       DUCKDB_AGENT_MODE: '0'
       TIDBFS_GDB_ON_TIMEOUT: '1'
       TIDBFS_TRACE_HTTP: ${{ inputs.trace_http }}
+      TIDBFS_TEST_NODELAY: ${{ inputs.server_nodelay }}
       BINARY_RUN: ${{ inputs.binary_run }}
       RUNTIME_SHA: 9619e391f8430774cdb47158afd2350a0fc8cc83
     steps:
@@ -60,8 +66,10 @@ jobs:
           PYTRACE
       - name: Reproduce the read stall with the original deadline
         run: |
+          set -o pipefail
           "$DUCKDB" -unsigned -bail -c "LOAD 'build/tidbfs.duckdb_extension';"
           python3 -m unittest discover -s test -v 2>&1 | tee build/http-repro.log
+          python3 scripts/stress_multipart.py --iterations 30 2>&1 | tee -a build/http-repro.log
       - name: Preserve traces
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

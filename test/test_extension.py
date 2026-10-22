@@ -46,6 +46,7 @@ class Fixture:
 
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
+            disable_nagle_algorithm = os.environ.get("TIDBFS_TEST_NODELAY") == "1"
 
             def log_message(self, *args):
                 pass
@@ -355,9 +356,13 @@ class ExtensionTest(unittest.TestCase):
                 faulthandler.dump_traceback()
                 if trace_path:
                     if shutil.which('ss'):
-                        sockets = subprocess.run(['ss', '-tanp'], capture_output=True, text=True, timeout=10)
-                        print('Fixture TCP sockets:', '\n'.join(line for line in sockets.stdout.splitlines()
-                              if ':' + str(self.fixture.server.server_port) in line), flush=True)
+                        sockets = subprocess.run(['ss', '-tainp'], capture_output=True, text=True, timeout=10)
+                        lines = sockets.stdout.splitlines()
+                        selected = set()
+                        for i, line in enumerate(lines):
+                            if ':' + str(self.fixture.server.server_port) in line:
+                                selected.update((i, i+1))
+                        print('Fixture TCP sockets:', '\n'.join(line for i, line in enumerate(lines) if i in selected), flush=True)
                     os.killpg(child.pid, signal.SIGKILL)
                 elif os.environ.get("TIDBFS_GDB_ON_TIMEOUT") == "1" and shutil.which("gdb"):
                     try:
