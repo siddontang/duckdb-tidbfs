@@ -339,7 +339,8 @@ class ExtensionTest(unittest.TestCase):
             with tempfile.NamedTemporaryFile(dir=trace_dir, prefix=self._testMethodName + '-', delete=False) as trace:
                 trace_path = Path(trace.name)
             # No payload bytes or headers enter the syscall trace.
-            command = ['strace', '-f', '-tt', '-T', '-s', '0', '-e', 'trace=network,poll,ppoll',
+            command = ['strace', '-f', '-tt', '-T', '-s', '32', '-e', 'trace=network,poll,ppoll',
+                       '-e', 'raw=sendto,recvfrom,sendmsg,recvmsg,sendmmsg,recvmmsg',
                        '-o', str(trace_path), '--'] + command
         with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, start_new_session=bool(trace_path)) as child:

@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Verify producer and reuse the exact unchanged runtime
         env:
           GH_TOKEN: ${{ github.token }}
@@ -48,6 +48,16 @@ jobs:
           echo "DUCKDB=$RUNNER_TEMP/duckdb/duckdb" >> "$GITHUB_ENV"
           dpkg-query -W libcurl4t64 strace
           ldd build/tidbfs.duckdb_extension
+      - name: Inspect TCP defaults and the original receive trace
+        run: |
+          sysctl net.ipv4.tcp_rmem net.ipv4.tcp_wmem net.ipv4.tcp_moderate_rcvbuf
+          python3 - <<'PYTRACE'
+          from pathlib import Path
+          for path in sorted(Path('build/http-traces').glob('*')):
+              matches=[line for line in path.read_text().splitlines() if 'setsockopt' in line]
+              if matches:
+                  print(path.name, '\n'.join(matches[:12]))
+          PYTRACE
       - name: Reproduce the read stall with the original deadline
         run: |
           "$DUCKDB" -unsigned -bail -c "LOAD 'build/tidbfs.duckdb_extension';"
