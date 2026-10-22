@@ -19,7 +19,7 @@ on:
       receive_buffer:
         description: Override libcurl receive buffer in a test interposer
         type: choice
-        options: ['16384', '65536', '262144']
+        options: ['16384', '65536', '262144', 'compare']
         default: '16384'
 permissions:
   contents: read
@@ -97,6 +97,23 @@ jobs:
       - name: Reproduce the read stall with the original deadline
         run: |
           set -o pipefail
+          if test "$TIDBFS_TEST_CURL_BUFFER" = compare; then
+            uname -a
+            for size in 16384 65536 16384; do
+              echo "CONTROLLED RECEIVE BUFFER: $size"
+              set +e
+              TIDBFS_TEST_CURL_BUFFER=$size python3 scripts/stress_multipart.py --iterations 15 2>&1 | tee -a build/http-repro.log
+              result=${PIPESTATUS[0]}
+              set -e
+              if test "$size" = 65536; then
+                test "$result" = 0
+              else
+                test "$result" != 0
+                grep -q TimeoutExpired build/http-repro.log
+              fi
+            done
+            exit 0
+          fi
           "$DUCKDB" -unsigned -bail -c "LOAD 'build/tidbfs.duckdb_extension';"
           python3 -m unittest discover -s test -v 2>&1 | tee build/http-repro.log
           python3 scripts/stress_multipart.py --iterations 30 2>&1 | tee -a build/http-repro.log
