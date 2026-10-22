@@ -16,6 +16,11 @@ on:
         type: choice
         options: ['0', '1']
         default: '0'
+      receive_buffer:
+        description: Override libcurl receive buffer in a test interposer
+        type: choice
+        options: ['16384', '65536', '262144']
+        default: '16384'
 permissions:
   contents: read
   actions: read
@@ -28,6 +33,7 @@ jobs:
       TIDBFS_GDB_ON_TIMEOUT: '1'
       TIDBFS_TRACE_HTTP: ${{ inputs.trace_http }}
       TIDBFS_TEST_NODELAY: ${{ inputs.server_nodelay }}
+      TIDBFS_TEST_CURL_BUFFER: ${{ inputs.receive_buffer }}
       BINARY_RUN: ${{ inputs.binary_run }}
       RUNTIME_SHA: 9619e391f8430774cdb47158afd2350a0fc8cc83
     steps:
@@ -64,6 +70,30 @@ jobs:
               if matches:
                   print(path.name, '\n'.join(matches[:12]))
           PYTRACE
+      - name: Build the controlled receive-buffer interposer
+        run: |
+          cat > build/curl-buffer.c <<'CSHIM'
+          #include <curl/curl.h>
+          #include <dlfcn.h>
+          #include <pthread.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          static CURLcode (*perform)(CURL *);
+          static pthread_once_t once = PTHREAD_ONCE_INIT;
+          static long buffer;
+          static void resolve(void) {
+              perform = (CURLcode (*)(CURL *))dlsym(RTLD_NEXT, "curl_easy_perform");
+              buffer = strtol(getenv("TIDBFS_TEST_CURL_BUFFER"), NULL, 10);
+              fprintf(stderr, "Test curl receive buffer: %ld\n", buffer);
+          }
+          CURLcode curl_easy_perform(CURL *curl) {
+              pthread_once(&once, resolve);
+              CURLcode code = curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, buffer);
+              return code == CURLE_OK ? perform(curl) : code;
+          }
+          CSHIM
+          gcc -shared -fPIC -O2 build/curl-buffer.c -lcurl -ldl -pthread -o build/curl-buffer.so
+          echo "LD_PRELOAD=$GITHUB_WORKSPACE/build/curl-buffer.so" >> "$GITHUB_ENV"
       - name: Reproduce the read stall with the original deadline
         run: |
           set -o pipefail
