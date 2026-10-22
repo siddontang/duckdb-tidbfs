@@ -92,7 +92,7 @@ jobs:
               return code == CURLE_OK ? perform(curl) : code;
           }
           CSHIM
-          gcc -shared -fPIC -O2 build/curl-buffer.c -lcurl -ldl -pthread -o build/curl-buffer.so
+          gcc -shared -fPIC -O2 build/curl-buffer.c /usr/lib/x86_64-linux-gnu/libcurl.so -ldl -pthread -o build/curl-buffer.so
           echo "LD_PRELOAD=$GITHUB_WORKSPACE/build/curl-buffer.so" >> "$GITHUB_ENV"
       - name: Reproduce the read stall with the original deadline
         run: |
