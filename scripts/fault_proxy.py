@@ -9,6 +9,13 @@ import time
 import urllib.parse
 
 
+class FaultHTTPServer(http.server.ThreadingHTTPServer):
+    # The extent runtime allows 200 concurrent downloads. Python's default
+    # backlog of five resets/drops bursts before a handler can record them,
+    # accidentally injecting object failures even with no fault configured.
+    request_queue_size = 256
+
+
 class FaultProxy:
     def __init__(self, upstream, *, objects=False):
         target = urllib.parse.urlsplit(upstream)
@@ -129,7 +136,7 @@ class FaultProxy:
 
             do_GET = do_PUT = do_POST = do_HEAD = do_DELETE = handle_request
 
-        self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.server = FaultHTTPServer(('127.0.0.1', 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = 'http://127.0.0.1:' + str(self.server.server_port)

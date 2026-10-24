@@ -5,6 +5,7 @@ Requires pymysql, matching DuckDB/extension binaries, tidb-server and the fs
 server. No existing services, databases or filesystem credentials are used.
 """
 import argparse
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -74,9 +75,11 @@ def main():
                     '--status-host=127.0.0.1', '--log-slow-query=' + str(log_dir / 'tidb-slow.log'),
                     '-L=error'], 'tidb', dict(os.environ, TZ='UTC'))
             db = wait(lambda: pymysql.connect(host='127.0.0.1', port=sql_port, user='root'))
+            suffix = uuid.uuid4().hex[:12]
+            live_db, tests_db = 'tidbfs_live_' + suffix, 'tidbfs_tests_' + suffix
             with db.cursor() as cursor:
-                cursor.execute('CREATE DATABASE tidbfs_live')
-                cursor.execute('CREATE DATABASE tidbfs_tests')
+                cursor.execute('CREATE DATABASE ' + live_db)
+                cursor.execute('CREATE DATABASE ' + tests_db)
             db.close()
             print('Disposable TiDB ready', flush=True)
             # Never inherit a production DRIVE9 configuration into this harness.
@@ -84,7 +87,7 @@ def main():
             env.update(TZ='UTC', DUCKDB_AGENT_MODE='0', DRIVE9_TENANT_PROVIDER='local',
                        DRIVE9_TENANT_MAINTENANCE_INTERVAL='1s',
                        DRIVE9_LISTEN_ADDR='127.0.0.1:' + str(fs_port),
-                       DRIVE9_LOCAL_DSN=f'root@tcp(127.0.0.1:{sql_port})/tidbfs_live?parseTime=true',
+                       DRIVE9_LOCAL_DSN=f'root@tcp(127.0.0.1:{sql_port})/{live_db}?parseTime=true',
                        DRIVE9_S3_DIR=tmp + '/objects', DRIVE9_TOKEN_SIGNING_KEY=secrets.token_hex(32),
                        DRIVE9_MASTER_KEY=secrets.token_hex(32))
             if args.rustfs_server:
@@ -137,15 +140,15 @@ def main():
             wait(ready)
             if args.fs_source:
                 test_env = env.copy()
-                test_env['DRIVE9_TEST_TIDB_DSN'] = f'root@tcp(127.0.0.1:{sql_port})/tidbfs_tests?parseTime=true'
+                test_env['DRIVE9_TEST_TIDB_DSN'] = f'root@tcp(127.0.0.1:{sql_port})/{tests_db}?parseTime=true'
                 with open(log_dir / 'go-tests.log', 'w') as output:
                     subprocess.run(['go', 'test', './pkg/datastore', './pkg/backend', './pkg/server', './pkg/tenant/schema',
                                     './cmd/drive9-server', '-p=1', '-count=1', '-run',
                                     'TestExtent|TestFileRead|TestStatForRead|TestReadPlan|TestAppendLog|Test.*IfRevision|Test.*RevisionCAS|TestSharedTiDBSchemaStatementsContainsAllTables|TestCurrentSharedTiDBSchemaVersionIsDerivedFromSharedStatements|Test.*DumpInitSQL'],
                                    cwd=args.fs_source, env=test_env, stdout=output, stderr=output, check=True)
                 print('Go storage, isolation, protocol, range and schema regressions passed', flush=True)
-            env.update(DRIVE9_BASE=endpoint, DRIVE9_API_KEY=token)
-            subprocess.run(['go', 'test', '-mod=readonly', '-tags', TAGS, '-count=1', '-v', '.'],
+            env.update(DRIVE9_BASE=endpoint, DRIVE9_API_KEY=token, TIDBFS_TEST_LOG_DIR=str(log_dir))
+            subprocess.run(['go', 'test', '-race', '-mod=readonly', '-tags', TAGS, '-count=1', '-v', '.'],
                            cwd=ROOT / 'bridge', env=dict(env, CGO_ENABLED='1'), check=True)
             if not args.quack_only:
                 subprocess.run(['python3', 'scripts/native_smoke.py'] + args.tests, cwd=ROOT, env=env, check=True)
@@ -197,6 +200,14 @@ def main():
                 wait(recover, timeout=150)
                 print('Client + fs SIGKILL, server restart and WAL recovery passed', flush=True)
         finally:
+            # Keep credential-free fault summaries even when a test fails.
+            for index, proxy in enumerate(proxies):
+                with proxy.mu:
+                    counts = Counter((event.get('method'), event.get('op'), event.get('status'),
+                                      event.get('fault')) for event in proxy.events)
+                (log_dir / f'proxy-{index}-summary.json').write_text(json.dumps([
+                    {'method': key[0], 'op': key[1], 'status': key[2], 'fault': key[3], 'count': count}
+                    for key, count in counts.items()], indent=2) + '\n')
             for child in reversed(processes):
                 if child.poll() is None:
                     child.terminate()

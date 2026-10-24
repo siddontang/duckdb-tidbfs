@@ -2,6 +2,8 @@
 // Paths, blocks, sessions and locks are the existing filesystem's own objects.
 extern "C" char *tidbfs_extent_call(char *request);
 extern "C" void tidbfs_extent_free(char *response);
+extern "C" char *tidbfs_extent_read(uint64_t session, uint64_t handle, void *buffer, uint64_t length,
+                                    uint64_t offset, uint64_t *count);
 
 nlohmann::json ExtentCall(nlohmann::json request) {
 	auto raw = request.dump();
@@ -64,7 +66,7 @@ struct ExtentHandle : FileHandle {
 	uint64_t handle;
 	idx_t position = 0, size;
 	bool closed = false;
-	std::mutex mu;
+	std::shared_mutex mu;
 	std::shared_ptr<ExtentHandle> read_pin;
 	ExtentHandle(FileSystem &fs, const string &path, FileOpenFlags flags, std::shared_ptr<ExtentClient> c,
 				 const nlohmann::json &info)
@@ -82,7 +84,7 @@ struct ExtentHandle : FileHandle {
 		}
 	}
 	void Close() override {
-		std::lock_guard<std::mutex> lock(mu);
+		std::unique_lock<std::shared_mutex> lock(mu);
 		if (closed)
 			return;
 		closed = true;
@@ -99,16 +101,22 @@ struct ExtentHandle : FileHandle {
 	}
 	idx_t ReadAt(void *buffer, idx_t count, idx_t offset) {
 		Check();
+		if (offset > idx_t(std::numeric_limits<int64_t>::max()) ||
+			count > idx_t(std::numeric_limits<int64_t>::max()) - offset)
+			throw IOException("Extent read offset overflow");
 		idx_t done = 0;
 		while (done < count) {
 			auto n = MinValue<idx_t>(1 << 20, count - done);
-			auto result = client->Call({{"op", "read"}, {"handle", handle}, {"offset", offset + done}, {"length", n}});
-			auto data = Blob::FromBase64(string_t(JSONString(result, "data")));
-			if (data.size() > n)
+			uint64_t received = 0;
+			std::unique_ptr<char, decltype(&tidbfs_extent_free)> error(
+			    tidbfs_extent_read(client->session, handle, static_cast<char *>(buffer) + done, n, offset + done,
+			                       &received), tidbfs_extent_free);
+			if (error)
+				throw IOException("tidbfs extent: %s", error.get());
+			if (received > n)
 				throw IOException("Oversized extent read");
-			memcpy(static_cast<char *>(buffer) + done, data.data(), data.size());
-			done += data.size();
-			if (data.size() < n)
+			done += received;
+			if (received < n)
 				break;
 		}
 		return done;
@@ -196,13 +204,17 @@ class TiDBDatabaseFileSystem : public FileSystem {
 	}
 	void Read(FileHandle &base, void *buffer, int64_t count, idx_t offset) override {
 		auto &h = base.Cast<ExtentHandle>();
-		std::lock_guard<std::mutex> lock(h.mu);
-		if (count < 0 || h.ReadAt(buffer, idx_t(count), offset) != idx_t(count))
-			throw IOException("Short extent read");
+		std::shared_lock<std::shared_mutex> lock(h.mu);
+		if (count < 0)
+			throw IOException("Negative read size");
+		auto received = h.ReadAt(buffer, idx_t(count), offset);
+		if (received != idx_t(count))
+			throw IOException("Short extent read from %s at %llu: expected %lld bytes, received %llu",
+			                  h.path, offset, count, received);
 	}
 	int64_t Read(FileHandle &base, void *buffer, int64_t count) override {
 		auto &h = base.Cast<ExtentHandle>();
-		std::lock_guard<std::mutex> lock(h.mu);
+		std::unique_lock<std::shared_mutex> lock(h.mu);
 		if (count < 0)
 			throw IOException("Negative read size");
 		auto n = h.ReadAt(buffer, idx_t(count), h.position);
@@ -211,14 +223,14 @@ class TiDBDatabaseFileSystem : public FileSystem {
 	}
 	void Write(FileHandle &base, void *buffer, int64_t count, idx_t offset) override {
 		auto &h = base.Cast<ExtentHandle>();
-		std::lock_guard<std::mutex> lock(h.mu);
+		std::unique_lock<std::shared_mutex> lock(h.mu);
 		if (count < 0)
 			throw IOException("Negative write size");
 		h.WriteAt(buffer, idx_t(count), offset);
 	}
 	int64_t Write(FileHandle &base, void *buffer, int64_t count) override {
 		auto &h = base.Cast<ExtentHandle>();
-		std::lock_guard<std::mutex> lock(h.mu);
+		std::unique_lock<std::shared_mutex> lock(h.mu);
 		if (count < 0)
 			throw IOException("Negative write size");
 		auto offset = h.flags.OpenForAppending() ? h.size : h.position;
@@ -228,13 +240,13 @@ class TiDBDatabaseFileSystem : public FileSystem {
 	}
 	void FileSync(FileHandle &base) override {
 		auto &h = base.Cast<ExtentHandle>();
-		std::lock_guard<std::mutex> lock(h.mu);
+		std::unique_lock<std::shared_mutex> lock(h.mu);
 		h.Check();
 		h.client->Call({{"op", "sync"}, {"handle", h.handle}});
 	}
 	void Truncate(FileHandle &base, int64_t size) override {
 		auto &h = base.Cast<ExtentHandle>();
-		std::lock_guard<std::mutex> lock(h.mu);
+		std::unique_lock<std::shared_mutex> lock(h.mu);
 		h.Check(true);
 		if (size < 0)
 			throw IOException("Negative truncate size");
@@ -243,7 +255,7 @@ class TiDBDatabaseFileSystem : public FileSystem {
 	}
 	int64_t GetFileSize(FileHandle &base) override {
 		auto &h = base.Cast<ExtentHandle>();
-		std::lock_guard<std::mutex> lock(h.mu);
+		std::unique_lock<std::shared_mutex> lock(h.mu);
 		h.Check();
 		return int64_t(h.size);
 	}
@@ -251,13 +263,13 @@ class TiDBDatabaseFileSystem : public FileSystem {
 	FileType GetFileType(FileHandle &) override { return FileType::FILE_TYPE_REGULAR; }
 	void Seek(FileHandle &base, idx_t offset) override {
 		auto &h = base.Cast<ExtentHandle>();
-		std::lock_guard<std::mutex> lock(h.mu);
+		std::unique_lock<std::shared_mutex> lock(h.mu);
 		h.Check();
 		h.position = offset;
 	}
 	idx_t SeekPosition(FileHandle &base) override {
 		auto &h = base.Cast<ExtentHandle>();
-		std::lock_guard<std::mutex> lock(h.mu);
+		std::unique_lock<std::shared_mutex> lock(h.mu);
 		h.Check();
 		return h.position;
 	}

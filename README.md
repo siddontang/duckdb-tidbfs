@@ -185,7 +185,8 @@ DuckDB 2.0 workers can serve the attached filesystem database with the official
 Quack extension. Multiple remote clients then execute concurrent transactions
 inside one worker, while tidbfs persists its database and WAL. Replacement
 workers reopen the same shared URI; client SQL sessions are not migrated.
-See [Quack setup, concurrency, failure tests and takeover](docs/quack.md).
+See [Quack setup, concurrency, failure tests and takeover](docs/quack.md),
+and [extent read performance and the reproducible benchmark](docs/read-performance.md).
 
 ## Read-path optimizations
 

@@ -2,6 +2,7 @@
 package main
 
 /*
+#include <stdint.h>
 #include <stdlib.h>
 */
 import "C"
@@ -52,12 +53,13 @@ type handle struct {
 	write bool
 }
 type session struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	rt       *extent.Runtime
 	files    map[uint64]handle
 	failed   atomic.Bool
 	deadline atomic.Pointer[time.Time]
 	margin   time.Duration
+	closed   bool // protected by mu, including calls that raced with disconnect
 }
 
 var sessions = struct {
@@ -232,9 +234,69 @@ func info(e *meta.Entry) map[string]any {
 	return map[string]any{"exists": true, "directory": e.Attr.Typ == meta.TypeDirectory, "size": e.Attr.Length, "inode": e.Inode}
 }
 
+// Readers share a lifetime guard. All namespace/handle mutations and runtime
+// shutdown retain the exclusive guard, so no VFS read can outlive its handle.
+func (s *session) withReadHandle(id uint64, read func(handle) (int, error)) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return 0, syscall.EBADF
+	}
+	if err := s.healthy(); err != nil {
+		return 0, err
+	}
+	h, ok := s.files[id]
+	if !ok {
+		return 0, syscall.EBADF
+	}
+	n, err := read(h)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.healthy(); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+const maxRead = 1 << 20
+
+func validRead(length, offset uint64) bool {
+	return length <= maxRead && offset <= math.MaxInt64 && length <= math.MaxInt64-offset
+}
+
+// buffer belongs to the synchronous caller. VFS.Read fills it before returning;
+// neither the bridge nor VFS retains the buffer after this call.
+func (s *session) readInto(id uint64, buffer []byte, offset uint64) (int, error) {
+	if !validRead(uint64(len(buffer)), offset) {
+		return 0, syscall.EINVAL
+	}
+	return s.withReadHandle(id, func(h handle) (int, error) {
+		n, eno := s.rt.VFS.Read(fileContext(""), h.ino, buffer, offset, h.fh)
+		if eno != 0 {
+			return 0, eno
+		}
+		if n < 0 || n > len(buffer) {
+			return 0, syscall.EIO
+		}
+		return n, nil
+	})
+}
+
 func (s *session) call(r request) (map[string]any, error) {
+	if r.Op == "read" {
+		if !validRead(r.Length, r.Offset) {
+			return nil, syscall.EINVAL
+		}
+		data := make([]byte, int(r.Length))
+		n, err := s.readInto(r.Handle, data, r.Offset)
+		return map[string]any{"data": data[:n]}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return nil, syscall.EBADF
+	}
 	if err := s.healthy(); err != nil {
 		return nil, err
 	}
@@ -306,6 +368,18 @@ func (s *session) call(r request) (map[string]any, error) {
 			if eno = v.Setlk(ctx, e.Inode, fh, fh, 0, math.MaxInt64, typ, uint32(os.Getpid()), false); eno != 0 {
 				return nil, fmt.Errorf("file is locked: %w", eno)
 			}
+			// A failed lock attempt can warm the SDK's one-second open cache
+			// before the previous owner checkpoints or changes the file. Once
+			// ownership is acquired, discard that snapshot and update VFS reader
+			// lengths from authoritative attributes (including same-size edits).
+			if eno = v.Meta.InvalidateChunkCache(ctx, e.Inode, math.MaxUint32); eno != 0 {
+				return nil, eno
+			}
+			fresh, eno := v.GetAttr(ctx, e.Inode, 0)
+			if eno != 0 {
+				return nil, eno
+			}
+			e = fresh
 		}
 		if r.Truncate {
 			if !r.Write {
@@ -392,10 +466,6 @@ func (s *session) call(r request) (map[string]any, error) {
 		return nil, syscall.EINVAL
 	}
 	switch r.Op {
-	case "read":
-		data := make([]byte, r.Length)
-		n, eno := v.Read(ctx, h.ino, data, r.Offset, h.fh)
-		return map[string]any{"data": data[:n]}, check(eno)
 	case "write":
 		if !h.write {
 			return nil, syscall.EACCES
@@ -461,12 +531,50 @@ func dispatch(r request) (map[string]any, error) {
 	if r.Op == "disconnect" {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		s.closed = true
 		for _, h := range s.files {
 			s.rt.VFS.Release(fileContext(""), h.ino, h.fh)
 		}
 		return map[string]any{}, extent.CloseRuntime(s.rt)
 	}
 	return s.call(r)
+}
+
+func readBuffer(sid, id uint64, buffer unsafe.Pointer, length, offset uint64) (int, error) {
+	if !validRead(length, offset) || (length != 0 && buffer == nil) {
+		return 0, syscall.EINVAL
+	}
+	sessions.Lock()
+	s := sessions.all[sid]
+	sessions.Unlock()
+	if s == nil {
+		return 0, syscall.EBADF
+	}
+	return s.readInto(id, unsafe.Slice((*byte)(buffer), int(length)), offset)
+}
+
+//export tidbfs_extent_read
+func tidbfs_extent_read(sid, id C.uint64_t, buffer unsafe.Pointer, length, offset C.uint64_t, count *C.uint64_t) (failure *C.char) {
+	// Only errors allocate C memory. Success has no JSON, Base64, or bridge
+	// payload allocation/copy. The C++ caller frees errors with extent_free.
+	defer func() {
+		if recover() != nil {
+			if count != nil {
+				*count = 0
+			}
+			failure = C.CString("extent read panic")
+		}
+	}()
+	if count == nil {
+		return C.CString("missing extent read count")
+	}
+	*count = 0
+	n, err := readBuffer(uint64(sid), uint64(id), buffer, uint64(length), uint64(offset))
+	if err != nil {
+		return C.CString(err.Error())
+	}
+	*count = C.uint64_t(n)
+	return nil
 }
 
 //export tidbfs_extent_call

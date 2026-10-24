@@ -46,6 +46,10 @@ jobs:
         run: |
           make test
           python3 scripts/install.py --directory "$RUNNER_TEMP/installed-extensions"
+      - name: Race-check extent read lifetime and session guards
+        run: |
+          tags=$(python3 -c 'import sys; sys.path.insert(0,"scripts"); from build_extent import TAGS; print(TAGS)')
+          go test -C bridge -race -mod=readonly -tags "$tags" -count=1 .
       - name: Stress multipart success and abort with default and constrained async I/O
         run: |
           python3 scripts/stress_multipart.py --iterations 30
@@ -94,6 +98,7 @@ jobs:
           # Crash/partition/ambiguous-write takeover needs current tidbcloud/fs.
           # The public server's local fallback does not sweep expired sessions.
           python3 scripts/test_native_live.py --tidb-server "$RUNNER_TEMP/tidb/tidb-server" --fs-server "$RUNNER_TEMP/drive9-server" --rustfs-server "$RUNNER_TEMP/rustfs" --quack-only --log-dir build/quack-live \
+            QuackTests.test_parallel_buffer_limited_scans_and_writes \
             QuackTests.test_concurrent_clients_commit_and_read \
             QuackTests.test_conflicting_writers_rollback_and_snapshot \
             QuackTests.test_clean_worker_handoff_and_readonly_clients \

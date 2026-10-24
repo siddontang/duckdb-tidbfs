@@ -29,6 +29,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <shared_mutex>
 #include <tuple>
 #include <unistd.h>
 

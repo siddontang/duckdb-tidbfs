@@ -1,0 +1,144 @@
+{
+  "feature_commit": "c635e86df4ea2150d684cc4bcfb70f27df7adaf2",
+  "main_commit": "e135b8b61b87d30ed49fc06718121ba89298acf5",
+  "binaries": {
+    "duckdb": "432e9c8012d0259e7c4630fa2136bf59fb832769ca7e0f6e374b8af2d2cebed9",
+    "quack": "ef547f01cb30412aa6dbade59bdd5254ed897ba4f113a1700e3e01e00a747935",
+    "fs": "ee1f19c1cba851735df3bb20024e1bb579ba3ea8ec1cf8af393bc9565aed7695",
+    "rustfs": "9e5bb7b9bc9b201ada61a7e65cf1faac85f3ecd0bc7026770e7834fdc4447a06",
+    "tidb_entrypoint": "8ad0586be640027265d99487a5051dde34b89ce5b1f38ff477826100e3d8dc5f",
+    "tidbfs": "7ded5e0e7ed7b5064f1cb9b271a31648f34df72405049b596584abf4f4ef5596",
+    "baseline": "22cf68bfce89d0a22392a6b875df069ff386543ba2e0370d46b6108acd851080"
+  },
+  "benchmark_sha256": "2aa765664315a6b85a0935c89748974a21f71961c5edc7fd56b58f061e14b826",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4",
+  "memory_bytes": 25769803776,
+  "method": {
+    "duration_seconds": 8.0,
+    "trials": 3,
+    "clients": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "workloads": [
+      "read_hot",
+      "write1",
+      "write128",
+      "mixed90"
+    ],
+    "rows": 1048576,
+    "row_bytes": 32,
+    "threads": 4,
+    "memory_limit": "1GB",
+    "checkpoint_threshold": "1TB",
+    "fs_maintenance_interval": "default 5m",
+    "request_model": "closed loop, one in-flight SQL per independent Quack connection",
+    "client_driver": "python",
+    "python_client_limits": "threads=1, memory_limit=32MB per independent client instance; client and driver CPU sampled together",
+    "transport": "Quack loopback; direct fs HTTP and RustFS S3 without Python proxies",
+    "storage": "Caller-supplied TiDB and RustFS binaries, all services on this host; record backing TiKV topology separately",
+    "cache": "warm DuckDB buffer pool for matrix; fresh workers with 64MB buffer pool for stream; OS/object caches not purged",
+    "timing": "client end-to-end SQL through durable COMMIT acknowledgement; process creation/attach/checkpoint excluded and checkpoint measured separately",
+    "order": "same-configuration trials adjacent; rotate first backend each trial/configuration",
+    "latency_quantiles": "linear interpolation of all successful request latencies per run; raw samples saved; low N cannot establish stable p99"
+  },
+  "stream_method": {
+    "duration_seconds": 10.0,
+    "trials": 3,
+    "clients": [
+      1,
+      4,
+      8
+    ],
+    "workloads": [
+      "read_stream"
+    ],
+    "rows": 4194304,
+    "row_bytes": 32,
+    "threads": 4,
+    "memory_limit": "64MB",
+    "checkpoint_threshold": "1TB",
+    "fs_maintenance_interval": "default 5m",
+    "request_model": "closed loop, one in-flight SQL per independent Quack connection",
+    "client_driver": "python",
+    "python_client_limits": "threads=1, memory_limit=32MB per independent client instance; client and driver CPU sampled together",
+    "transport": "Quack loopback; direct fs HTTP and RustFS S3 without Python proxies",
+    "storage": "Caller-supplied TiDB and RustFS binaries, all services on this host; record backing TiKV topology separately",
+    "cache": "warm DuckDB buffer pool for matrix; fresh workers with 64MB buffer pool for stream; OS/object caches not purged",
+    "timing": "client end-to-end SQL through durable COMMIT acknowledgement; process creation/attach/checkpoint excluded and checkpoint measured separately",
+    "order": "same-configuration trials adjacent; rotate first backend each trial/configuration",
+    "latency_quantiles": "linear interpolation of all successful request latencies per run; raw samples saved; low N cannot establish stable p99"
+  },
+  "fs_commit": "2d7d0a1cdd2fb22eeb198e3912c611e3f993f73d",
+  "fs_vcs_modified": false,
+  "summary_file": "summary.csv",
+  "selected_runs": 207,
+  "excluded_groups": [
+    {
+      "source": "matrix",
+      "case": [
+        "mixed90",
+        8,
+        1
+      ],
+      "reason": "active paging limit exceeded by at least one backend"
+    },
+    {
+      "source": "stream",
+      "case": [
+        "read_stream",
+        4,
+        2
+      ],
+      "reason": "active paging limit exceeded by at least one backend"
+    },
+    {
+      "source": "stream",
+      "case": [
+        "read_stream",
+        8,
+        2
+      ],
+      "reason": "active paging limit exceeded by at least one backend"
+    },
+    {
+      "source": "stream-quality-read_stream",
+      "case": [
+        "read_stream",
+        4,
+        1
+      ],
+      "reason": "active paging limit exceeded by at least one backend"
+    },
+    {
+      "source": "stream-quality-read_stream",
+      "case": [
+        "read_stream",
+        8,
+        2
+      ],
+      "reason": "active paging limit exceeded by at least one backend"
+    }
+  ],
+  "selection_policy": "Whole three-backend groups; 64 MiB swap-out and 128 MiB swap-in limits; first three eligible groups chronologically, independent of performance.",
+  "embedded_bridge_build_info": {
+    "baseline": {
+      "go_version": "go1.26.0",
+      "vcs.revision": "9619e391f8430774cdb47158afd2350a0fc8cc83",
+      "vcs.time": "2026-10-22T19:00:10Z",
+      "vcs.modified": "true"
+    },
+    "optimized": {
+      "go_version": "go1.26.0",
+      "vcs.revision": "cccf1d646510e0106bffe748669bc1a4f3baf613",
+      "vcs.time": "2026-10-24T06:29:08Z",
+      "vcs.modified": "true"
+    }
+  },
+  "build_note": "Scored macOS artifacts were built before committing their source changes; embedded Go revisions name parent commits with vcs.modified=true. The source trees and exact artifact hashes are recorded above.",
+  "matrix_warmup": "Aggregate pre-scan warms a,b,c, followed by three requests per client; early range queries may still fault in id blocks."
+}
