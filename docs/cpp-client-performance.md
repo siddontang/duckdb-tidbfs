@@ -170,6 +170,14 @@ on macOS. The original measurement identity and final rebuild identity are
 both recorded, rather than relabeling old measurements. The new SDK's
 standalone macOS and Linux sanitizer tests pass; its constrained Linux HTTP
 regression completes 256 KiB in 414 ms versus a 2-second timeout after
-47 KiB without repair. Full validation used 31 analytical tests, live C++
+47,104 bytes without repair. Full validation used 31 analytical tests, live C++
 conformance, Go → C++ → Go compatibility, 22 native cases, eight Quack cases
 and process/server-kill recovery.
+
+Linux integration also passed on plugin commit `4fd36cd` in both
+[PR CI](https://github.com/siddontang/duckdb-tidbfs/actions/runs/40305803871)
+and [push CI](https://github.com/siddontang/duckdb-tidbfs/actions/runs/40305795765):
+30 multipart success/abort repetitions in each HTTP scheduling mode, native
+compatibility and Quack failure/handoff cases, plus three buffer-limited
+concurrent scan/WAL-write repetitions per run. Both plugin-free local-file
+controls passed as well.
