@@ -1,10 +1,11 @@
 # Native DuckDB over existing extent storage
 
-The extension implements DuckDB's C++ FileSystem interface. Its extent adapter
-links `mem9-ai/drive9` at `67deed055d66`
-through `bridge/main.go`. The bridge is in-process, not a new filesystem server
-or a separately deployed service. Its module pins the same JuiceFS HTTP engine
-fork used by drive9. Build-time Go dependencies are recorded in `bridge/go.sum`.
+The extension implements DuckDB's C++ FileSystem interface and links the public
+[drive9 C++ SDK](https://github.com/mem9-ai/drive9/pull/1056), pinned by
+`cpp-sdk-revision.txt`. The SDK calls the existing HTTP APIs directly. It has no
+Go bridge, embedded Go runtime, FUSE daemon or separately deployed client service.
+Its object keys, slice maps, sessions and locks remain compatible with existing
+extent clients.
 
 ## Files and requests
 
@@ -18,7 +19,7 @@ flowchart LR
   SQL[DuckDB SQL / storage engine] --> CPP[C++ filesystem adapter]
   CPP --> HTTP[Existing file HTTP client]
   HTTP --> FS["/v1/fs: conditions, ranges, revision CAS"]
-  CPP --> Runtime[Existing drive9 extent runtime]
+  CPP --> Runtime[Public drive9 C++ SDK]
   Runtime --> Meta["/v1/extent/meta: inode, slices, locks, sessions"]
   Runtime --> Cred["/v1/data-credential"]
   Runtime --> Blocks[Existing object blocks]
@@ -30,7 +31,13 @@ adapter. `tidbfs+db:///` explicitly selects extent creation and database locks.
 It does not select a separate storage namespace.
 
 No server flag or schema migration is needed for native mode. It needs a server
-with the existing extent API and a supported data-credential backend. The
+with the existing extent API and a supported data-credential backend. Directory
+creation, removal and rename additionally need `new_session.directory_projection=true` from
+[fs #274](https://github.com/tidbcloud/fs/pull/274). The generic
+`mknod.create_projection` option creates both views in one transaction; it defaults
+to false to preserve existing Go/FUSE two-step mkdir. Older servers remain usable
+for file operations and existing-directory mirroring, while unsupported directory
+mutations fail before mutation. The
 current runtime supports local file storage for tests and S3/GCS object storage.
 Subtree-scoped server tokens are rejected by the existing inode API; use an
 unscoped filesystem token. DuckDB secret scopes only control client routing.
@@ -48,14 +55,12 @@ All clients writing a live database must honor these advisory locks. An ordinary
 PUT or rename is not fenced by a database-specific lease. This is the existing
 filesystem contract, not mandatory enforcement against arbitrary other writers.
 
-The existing VFS performs random I/O, zero-filled holes, truncate, rename,
-unlink, block uploads and slice publication. Its writeback staging is disabled.
-The first adapter version syncs each write through VFS.Fsync before returning,
-and maps DuckDB FileSync to that same operation. This avoids whole-database
-uploads but adds synchronous flush overhead; write batching needs separate
-performance work and recovery validation. The C ABI currently marshals bounded
-1 MiB chunks through JSON/base64, adding copies inside the process. Object
-transfers retain the runtime's existing binary protocol.
+The C++ SDK performs positional I/O, zero-filled holes, truncate, rename,
+unlink, immutable block uploads and slice publication. There is no background
+writeback. A write returns only after object upload and metadata publication
+are acknowledged; FileSync waits behind preceding writes. Binary payloads pass
+directly through typed C++ buffers, while existing metadata messages remain JSON.
+Shared immutable blocks and coalesced downloads avoid extra cache copies.
 
 Metadata transport errors permanently fail that client session. Repeated
 metadata publication attempts from the runtime are blocked after an ambiguous
@@ -84,7 +89,7 @@ The generic changes are [drive9 #1039](https://github.com/mem9-ai/drive9/pull/10
 and Range improvements and is not the session guard.
 
 Older servers ignore this field and retain their existing behavior, so they do
-not provide this guarantee. The live bridge regression reports that distinction
+not provide this guarantee. The live C++ SDK regression reports that distinction
 and can require it with `TIDBFS_REQUIRE_SESSION_GUARD=1`. Session validation does
 not make advisory locks mandatory or protect against another authorized client
 that deliberately bypasses them. Production object-store and TiKV failover
@@ -117,7 +122,7 @@ SET GLOBAL tidbfs_heartbeat_ms = 1000; -- ~1 s heartbeats, ~5 s session lifetime
 
 Use `2000` for a roughly 10-second lifetime. Accepted values are 1,000–600,000
 ms. Values below the 12,000 ms default require a server advertising
-`session_guard: true`. The bridge retains a full heartbeat of safety margin for
+`session_guard: true`. The C++ SDK retains a full heartbeat of safety margin for
 the 1 s/2 s settings and bounds metadata requests by the remaining safe lifetime;
 an expired or failed session cannot be revived.
 
@@ -151,7 +156,7 @@ set of tables to integrate.
 
 ## Build and live validation
 
-Build with a matching DuckDB 2.0.0 CLI/SDK, C++17, Go >=1.25.1 and libcurl:
+Build with a matching DuckDB 2.0.0 CLI/SDK, C++17, CMake, OpenSSL and libcurl:
 
 ```sh
 make test
@@ -162,16 +167,13 @@ python3 scripts/test_native_live.py \
   --fs-source /path/to/fs
 ```
 
-Linux links the Go adapter as adjacent `libtidbfs_extent.so`, with a relative
-`$ORIGIN` search path; macOS includes its static archive. A Go archive linked
-directly into DuckDB's ELF image makes its TLS allocation exceed glibc's dynamic
-loading reserve ([Go issue #48596](https://github.com/golang/go/issues/48596)).
-`scripts/install.py` installs the extension plus Linux runtime together and
-verifies `LOAD tidbfs`. Both direct build-directory loading and installed loading
-are checked in Linux CI. No `LD_PRELOAD` or loader tuning is required.
+Both platforms build one extension file. `scripts/install.py` installs it and
+verifies `LOAD tidbfs`; plain SQL `INSTALL` also works. Linux CI checks both direct
+build-directory loading and installed loading. Go is used only to build the
+independent HTTP test server.
 
 The harness creates disposable TiDB and filesystem processes, databases, object
-storage, keys and paths. It runs bridge conformance, native SQL and recovery
+storage, keys and paths. It runs C++ SDK conformance, native SQL and recovery
 checks. `--fs-source` additionally runs relevant server read/extent/schema tests.
 Logs are under ignored `build/native-live/`. The disposable services use UTC
 and a one-second maintenance poll to bound cleanup latency; the real 60-second
@@ -193,7 +195,7 @@ The public replay and raw results state the one-second test maintenance setting
 and distinguish client-side rejection from server-side delayed-write protection.
 
 Public GitHub CI builds a pinned public drive9 server and downloads a pinned,
-checksum-verified RustFS release, then runs bridge
+checksum-verified RustFS release, then runs C++ SDK
 conformance, six native compatibility cases, four cross-route locking/session
 regressions and four transient S3 fault cases. Quack concurrency and handoff
 validation is described in [the integration guide](quack.md).

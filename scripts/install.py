@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Install the extension and its Linux runtime together, then verify LOAD."""
+"""Install the single native C++ extension, then verify LOAD."""
 import argparse
 import csv
 import io
 import os
 from pathlib import Path
-import platform
-import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,9 +16,8 @@ def quote(value):
 
 def install(duckdb, directory=None):
     extension = ROOT / 'build/tidbfs.duckdb_extension'
-    runtime = ROOT / 'build/libtidbfs_extent.so'
-    if not extension.is_file() or (platform.system() == 'Linux' and not runtime.is_file()):
-        raise RuntimeError('Build the extension and runtime with make build first')
+    if not extension.is_file():
+        raise RuntimeError('Build the extension with make build first')
     settings = f'SET extension_directories=[{quote(Path(directory).resolve())}]; ' if directory else ''
     command = [duckdb, '-unsigned', '-bail', '-csv', '-noheader']
     result = subprocess.run(command, input=settings + f'FORCE INSTALL {quote(extension)}; '
@@ -30,8 +27,6 @@ def install(duckdb, directory=None):
     if len(rows) != 1 or len(rows[0]) != 1 or not rows[0][0]:
         raise RuntimeError('DuckDB did not report an installed extension path')
     installed = Path(rows[0][0])
-    if platform.system() == 'Linux':
-        shutil.copyfile(runtime, installed.parent / runtime.name)
     subprocess.run(command, input=settings + 'LOAD tidbfs;', text=True, check=True)
     print('Installed and loaded ' + str(installed))
 

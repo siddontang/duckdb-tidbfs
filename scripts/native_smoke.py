@@ -34,9 +34,10 @@ INIT = (f"LOAD {quote(ROOT / 'build/tidbfs.duckdb_extension')}; "
         f"CREATE SECRET fs (TYPE tidbfs, ENDPOINT {quote(ENDPOINT)}, TOKEN {quote(TOKEN)}); ")
 
 
-def sql(statement, fail=False, endpoint=ENDPOINT, timeout=180):
+def sql(statement, fail=False, endpoint=ENDPOINT, timeout=180, extension=None):
+    init = INIT if extension is None else INIT.replace(quote(ROOT / 'build/tidbfs.duckdb_extension'), quote(extension))
     result = subprocess.run([DUCKDB, '-unsigned', '-bail', '-csv', '-noheader'],
-                            input=INIT.replace(quote(ENDPOINT), quote(endpoint)) + statement, text=True, capture_output=True, timeout=timeout)
+                            input=init.replace(quote(ENDPOINT), quote(endpoint)) + statement, text=True, capture_output=True, timeout=timeout)
     error = result.stderr.replace(TOKEN, '<redacted>')
     if fail:
         if not result.returncode:
@@ -48,6 +49,26 @@ def sql(statement, fail=False, endpoint=ENDPOINT, timeout=180):
 
 
 class NativeDatabaseTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get('TIDBFS_INTEROP_EXTENSION'), 'requires an independently built prior client extension')
+    def test_prior_client_file_format_interoperability(self):
+        prior = Path(os.environ['TIDBFS_INTEROP_EXTENSION']).resolve()
+        sql(self.attach + 'CREATE TABLE interop AS SELECT i, i*3 AS v FROM range(100000) t(i); CHECKPOINT;', extension=prior)
+        self.assertEqual(sql(self.attach + 'SELECT sum(v) FROM interop;').splitlines()[-1], '14999850000')
+        sql(self.attach + 'UPDATE interop SET v=v+1 WHERE i<100; INSERT INTO interop VALUES (100000, 7); CHECKPOINT;')
+        self.assertEqual(sql(self.readonly + 'SELECT count(*), sum(v) FROM interop;', extension=prior).splitlines()[-1], '100001,14999850107')
+        # Force a fresh prior-client reservation AFTER C++ publishes objects.
+        # Its writes must not reuse C++ slice IDs or overwrite immutable blocks.
+        sql(self.attach + 'INSERT INTO interop VALUES (100001, 11); CHECKPOINT;', extension=prior)
+        self.assertEqual(sql(self.readonly + 'SELECT count(*), sum(v) FROM interop;').splitlines()[-1], '100002,14999850118')
+        parquet = self.uri + '.parquet'
+        sql(f"COPY (SELECT i FROM range(8192) t(i)) TO {quote(parquet)} (FORMAT PARQUET);")
+        # Keep the C++ Parquet inode live while the prior client creates a new
+        # inode, catching an inclusive/exclusive inode-counter mismatch too.
+        other = self.uri + '.prior.parquet'
+        sql(f"COPY (SELECT i+100 AS i FROM range(1024) t(i)) TO {quote(other)} (FORMAT PARQUET);", extension=prior)
+        self.assertEqual(sql(f"SELECT count(*), sum(i) FROM read_parquet({quote(parquet.replace('tidbfs+db:', 'tidbfs:'))});", extension=prior).splitlines()[-1], '8192,33550336')
+        self.assertEqual(sql(f"SELECT count(*), sum(i) FROM read_parquet({quote(other.replace('tidbfs+db:', 'tidbfs:'))});").splitlines()[-1], '1024,626176')
+
     def setUp(self):
         self.uri = 'tidbfs+db:///conformance-' + uuid.uuid4().hex + '.duckdb'
         self.attach = f'ATTACH {quote(self.uri)} AS remote; USE remote; '
@@ -164,10 +185,13 @@ class NativeDatabaseTests(unittest.TestCase):
             def log_message(self, *args):
                 pass
 
+            def do_HEAD(self):
+                self.do_POST()
+
             def do_POST(self):
-                body = self.rfile.read(int(self.headers['Content-Length']))
+                body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 op = self.headers.get('X-Drive9-Extent-Op')
-                request = urllib.request.Request(ENDPOINT + self.path, data=body, method='POST',
+                request = urllib.request.Request(ENDPOINT + self.path, data=body if body else None, method=self.command,
                     headers={'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json',
                              'X-Drive9-Extent-Op': op or ''})
                 try:
@@ -390,6 +414,35 @@ class NativeDatabaseTests(unittest.TestCase):
         self.assertTrue(sql(f"SELECT n FROM read_parquet({quote(ordinary)});").endswith('42'))
         sql(f"COPY (SELECT 43 n) TO {quote(ordinary)} (FORMAT PARQUET, USE_TMP_FILE false);")
         self.assertTrue(sql(f"SELECT n FROM read_parquet({quote(ordinary)});").endswith('43'))
+
+    def test_temporary_extent_copy_replaces_both_namespace_views(self):
+        # Exercise DuckDB's MoveFile, including URI-root JoinPath handling and
+        # a parent created through the classic API. Both must bind the same
+        # destination inode after publishing/replacing an extent temp file.
+        directory = self.uri[len('tidbfs+db://'):] + '.files'
+        request = urllib.request.Request(ENDPOINT + '/v1/fs' + directory + '?mkdir=1',
+                                         method='POST', headers={'Authorization': 'Bearer ' + TOKEN})
+        with urllib.request.urlopen(request, timeout=10):
+            pass
+        for path in (directory + '.parquet', directory + '/result.parquet'):
+            native, ordinary = 'tidbfs+db://' + path, 'tidbfs://' + path
+            previous_inode = None
+            for value in (11, 22):
+                with self.subTest(path=path, value=value):
+                    sql(f"COPY (SELECT {value} n) TO {quote(native)} (FORMAT PARQUET, USE_TMP_FILE true);")
+                    for uri in (native, ordinary):
+                        self.assertEqual(sql(f'SELECT n FROM read_parquet({quote(uri)});').splitlines()[-1], str(value))
+                    request = urllib.request.Request(ENDPOINT + '/v1/fs' + path, method='HEAD',
+                                                     headers={'Authorization': 'Bearer ' + TOKEN})
+                    with urllib.request.urlopen(request, timeout=10) as response:
+                        self.assertEqual(response.headers['X-Dat9-Content-Layout'], 'extent')
+                        inode = int(response.headers['X-Dat9-Extent-Ino'])
+                        self.assertGreater(inode, 0)
+                        self.assertNotEqual(inode, previous_inode, 'COPY did not replace the destination inode')
+                        previous_inode = inode
+        # The temporary projection must disappear along with its extent dentry.
+        listing = sql(f"SELECT count(*) FROM glob({quote('tidbfs://' + directory + '/*')});")
+        self.assertEqual(listing.splitlines()[-1], '1')
 
     def test_external_sort_with_remote_temporary_files(self):
         result = sql(self.attach + f"""

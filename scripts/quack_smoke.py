@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import shutil
 import secrets
 import socket
 import subprocess
@@ -27,9 +28,10 @@ from fault_proxy import FaultProxy
 
 ROOT = Path(__file__).resolve().parents[1]
 DUCKDB = os.environ.get('DUCKDB', 'duckdb')
-ENDPOINT = os.environ['DRIVE9_BASE']
-FS_TOKEN = os.environ['DRIVE9_API_KEY']
+ENDPOINT = os.environ.get('DRIVE9_BASE', '')
+FS_TOKEN = os.environ.get('DRIVE9_API_KEY', '')
 QUACK = os.environ.get('TIDBFS_QUACK_EXTENSION', 'quack')
+EXTENSION = Path(os.environ.get('TIDBFS_TEST_EXTENSION', ROOT / 'build/tidbfs.duckdb_extension')).resolve()
 HEARTBEAT = int(os.environ.get('TIDBFS_QUACK_HEARTBEAT_MS', '12000'))
 
 
@@ -46,7 +48,7 @@ def port():
 class CLI:
     """Bounded persistent CLI commands, including expected SQL failures."""
     def __init__(self, directory, name, redactions=()):
-        self.redactions = (FS_TOKEN,) + tuple(redactions)
+        self.redactions = tuple(value for value in (FS_TOKEN,) + tuple(redactions) if value)
         self.log_path = Path(directory) / (name + '.stderr.log')
         self.log = self.log_path.open('w')
         self.lines = queue.Queue()
@@ -71,6 +73,7 @@ class CLI:
         return text
 
     def execute(self, statement, *, error=False, timeout=90):
+        self.last_command = {'kind': statement.split()[0], 'started': time.monotonic(), 'finished': False}
         offset = len(self.log_path.read_text())
         marker = 'quack_test_' + uuid.uuid4().hex
         if self.process.poll() is not None:
@@ -83,10 +86,14 @@ class CLI:
             try:
                 line = self.lines.get(timeout=max(0.01, deadline - time.monotonic()))
             except queue.Empty:
+                callback = getattr(self, 'on_timeout', None)
+                if callback:
+                    callback(self)
                 raise TimeoutError('Quack CLI command timed out; inspect private build logs') from None
             if line is None:
                 raise RuntimeError('DuckDB exited: ' + self.redact(self.log_path.read_text())[-2500:])
             if line == marker:
+                self.last_command['finished'] = True
                 break
             if line:
                 rows.append(line)
@@ -111,6 +118,9 @@ class CLI:
         for stream in (self.process.stdin, self.process.stdout, self.log):
             if stream and not stream.closed:
                 stream.close()
+        if os.environ.get('TIDBFS_TEST_LOG_DIR') and self.log_path.exists():
+            destination = Path(os.environ['TIDBFS_TEST_LOG_DIR']) / self.log_path.name
+            destination.write_text(self.redact(self.log_path.read_text()))
 
     def kill(self):
         self.process.kill()
@@ -121,23 +131,31 @@ class QuackTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='tidbfs-quack-')
         self.addCleanup(self.tmp.cleanup)
-        self.uri = 'tidbfs+db:///quack-' + uuid.uuid4().hex + '.duckdb'
+        self.local = os.environ.get('TIDBFS_QUACK_BACKEND') == 'local'
+        self.uri = str(Path(self.tmp.name) / 'local.duckdb') if self.local else 'tidbfs+db:///quack-' + uuid.uuid4().hex + '.duckdb'
         self.token = secrets.token_hex(24)
         self.address = 'quack:127.0.0.1:' + str(port())
         self.counter = 0
+        self.instances = []
+        self.timeout_mu = threading.Lock()
+        self.timeout_captured = False
 
     def cli(self, role):
         self.counter += 1
-        cli = CLI(self.tmp.name, role + '-' + str(self.counter), (self.token,))
+        cli = CLI(self.tmp.name, self._testMethodName + '-' + role + '-' + str(self.counter), (self.token,))
+        cli.role = role
+        cli.on_timeout = self.capture_timeout
+        self.instances.append(cli)
         self.addCleanup(cli.close)
         return cli
 
     def prepare_worker(self, *, endpoint=ENDPOINT, name='worker'):
         worker = self.cli(name)
-        worker.execute(f"LOAD {quote(ROOT / 'build/tidbfs.duckdb_extension')}; LOAD {quote(QUACK)}; "
-            f"CREATE SECRET fs (TYPE tidbfs, ENDPOINT {quote(endpoint)}, TOKEN {quote(FS_TOKEN)}); "
-            f"SET GLOBAL tidbfs_heartbeat_ms={HEARTBEAT}; SET threads=4; "
-            "SET checkpoint_threshold='1GB';")
+        init = f'LOAD {quote(QUACK)}; SET threads=4; SET checkpoint_threshold=\'1GB\'; '
+        if not self.local:
+            init += (f"LOAD {quote(EXTENSION)}; CREATE SECRET fs (TYPE tidbfs, ENDPOINT {quote(endpoint)}, TOKEN {quote(FS_TOKEN)}); "
+                     f'SET GLOBAL tidbfs_heartbeat_ms={HEARTBEAT}; ')
+        worker.execute(init)
         return worker
 
     def attach_worker(self, worker, *, readonly=False, retry=False):
@@ -165,9 +183,99 @@ class QuackTests(unittest.TestCase):
 
     def client(self):
         client = self.cli('client')
-        client.execute(f"LOAD {quote(QUACK)}; SET http_timeout=10; "
+        tasks = os.environ.get('TIDBFS_QUACK_CLIENT_ASYNC_THREADS', 'default')
+        setting = '' if tasks == 'default' else f'SET async_threads={int(tasks)}; '
+        client.execute(f"LOAD {quote(QUACK)}; SET http_timeout=10; " + setting +
                        f"ATTACH {quote(self.address)} AS q (TOKEN {quote(self.token)}); CONNECT q; USE shared;")
         return client
+
+    def capture_timeout(self, source=None):
+        # Preserve the first blocked state before teardown and later tests can
+        # overwrite it. Never dump SQL, environment variables or frame arguments.
+        with self.timeout_mu:
+            if self.timeout_captured:
+                return
+            self.timeout_captured = True
+        root = Path(os.environ.get('TIDBFS_TEST_LOG_DIR', self.tmp.name)) / 'quack-timeouts' / self._testMethodName
+        root.mkdir(parents=True, exist_ok=True)
+        now = time.monotonic()
+        snapshots = []
+        for cli in self.instances:
+            command = dict(getattr(cli, 'last_command', {}))
+            if 'started' in command:
+                command['elapsed_seconds'] = now - command.pop('started')
+            snapshots.append({'pid': cli.process.pid, 'role': cli.role,
+                              'exit_code': cli.process.poll(), 'command': command})
+            if cli.log_path.exists():
+                (root / cli.log_path.name).write_text(cli.redact(cli.log_path.read_text()))
+        (root / 'commands.json').write_text(json.dumps(snapshots, indent=2) + '\n')
+        proxy = os.environ.get('TIDBFS_FAULT_PROXY')
+        if proxy:
+            try:
+                request = urllib.request.Request(proxy + '/_tidbfs_fault', headers={
+                    'Authorization': 'Bearer ' + os.environ['TIDBFS_FAULT_TOKEN']})
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    events = json.load(response)['events']
+                # Object paths are unnecessary for throughput and latency diagnosis.
+                for event in events:
+                    event.pop('path', None)
+                    event['age_seconds'] = now - event.pop('started', now)
+                (root / 'object-requests.json').write_text(json.dumps(events, indent=2) + '\n')
+            except (OSError, KeyError):
+                (root / 'object-capture-error.txt').write_text('Object request summary unavailable\n')
+        if os.environ.get('TIDBFS_STRACE_ON_TIMEOUT') == '1' and shutil.which('strace'):
+            worker = next((cli for cli in self.instances if cli.role.startswith('worker')), None)
+            if worker is not None:
+                # Raw send/receive arguments show only pointers and byte counts,
+                # never payloads, SQL, API keys or Authorization headers.
+                try:
+                    packets = None
+                    packet_log = None
+                    proxy_port = urllib.parse.urlsplit(proxy).port if proxy else None
+                    if proxy_port and shutil.which('tcpdump'):
+                        # IPv4 loopback: 14-byte link + 20-byte IP + 20-byte
+                        # TCP base header. Capture no payload or TCP options.
+                        packet_log = (root / 'object-tcp-headers.txt').open('w')
+                        packets = subprocess.Popen(['sudo', '-n', 'timeout', '35', 'tcpdump',
+                            '-nn', '-tt', '-S', '-l', '-s', '54', '-i', 'lo',
+                            'ip', 'and', 'tcp', 'and', 'port', str(proxy_port)],
+                            stdout=packet_log, stderr=subprocess.DEVNULL)
+                    subprocess.run(['sudo', '-n', 'timeout', '35', 'strace', '-f', '-tt', '-T',
+                        '-e', 'trace=poll,ppoll,recvfrom,sendto,setsockopt,getsockopt',
+                        '-e', 'raw=recvfrom,sendto', '-p', str(worker.process.pid),
+                        '-o', str(root / 'worker-network.strace')],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=40)
+                    if packets is not None:
+                        packets.wait(timeout=5)
+                        packet_log.close()
+                    result = subprocess.run(['ss', '-tinmp'], capture_output=True, text=True, timeout=5, check=False)
+                    # ss separates connections by a data line followed by its stats.
+                    lines = result.stdout.splitlines(); selected = []
+                    for index, line in enumerate(lines):
+                        if 'pid=' + str(worker.process.pid) + ',' in line or (proxy_port and f':{proxy_port} ' in line):
+                            selected.extend(lines[index:index+2])
+                    (root / 'worker-sockets.txt').write_text('\n'.join(selected) + '\n')
+                    result = subprocess.run(['sysctl', 'net.ipv4.tcp_rmem', 'net.ipv4.tcp_wmem',
+                        'net.core.rmem_max', 'net.core.wmem_max', 'net.ipv4.tcp_moderate_rcvbuf',
+                        'net.ipv4.tcp_shrink_window'], capture_output=True, text=True, timeout=5, check=False)
+                    (root / 'tcp-buffer-settings.txt').write_text(result.stdout)
+                except (OSError, subprocess.TimeoutExpired):
+                    (root / 'network-capture-error.txt').write_text('Network trace unavailable\n')
+        if os.environ.get('TIDBFS_GDB_ON_TIMEOUT') == '1' and shutil.which('gdb'):
+            targets = [cli for cli in self.instances if cli.role.startswith('worker')]
+            if source is not None and source not in targets:
+                targets.append(source)
+            for cli in targets:
+                if cli.process.poll() is not None:
+                    continue
+                try:
+                    result = subprocess.run(['sudo', '-n', 'gdb', '--batch', '-p', str(cli.process.pid),
+                        '-ex', 'set pagination off', '-ex', 'set print frame-arguments none',
+                        '-ex', 'thread apply all bt', '-ex', 'detach'],
+                        capture_output=True, text=True, timeout=20, check=False)
+                    (root / (cli.log_path.stem + '-stacks.log')).write_text(cli.redact(result.stdout + result.stderr))
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    (root / (cli.log_path.stem + '-capture-error.log')).write_text(type(error).__name__ + '\n')
 
     def verify(self, client, rows):
         expected = hashlib.md5('\n'.join(f'{i}:{hashlib.md5(str(i).encode()).hexdigest()}'
@@ -188,7 +296,7 @@ class QuackTests(unittest.TestCase):
 
     def replacement(self, old, *, kill=False):
         new = self.prepare_worker(name='worker-B')
-        with self.assertRaisesRegex(RuntimeError, 'locked'):
+        with self.assertRaisesRegex(RuntimeError, '(?i)lock'):
             self.attach_worker(new)
         if kill:
             old.kill()
@@ -198,6 +306,68 @@ class QuackTests(unittest.TestCase):
         self.attach_worker(new, retry=kill)
         self.serve(new, 'worker-B')
         return new
+
+    def test_parallel_buffer_limited_scans_and_writes(self):
+        worker = self.worker()
+        # 128 MiB of uncompressed columns exceeds the 64 MiB DuckDB buffer
+        # pool. Every reader uses the same native database file handle.
+        worker.execute("SET force_compression='uncompressed'; SET memory_limit='128MB'; "
+            "CREATE TABLE scan_data AS SELECT i::BIGINT id, hash(i) a, hash(i+1) b, hash(i+2) c "
+            "FROM range(4194304) t(i); CREATE TABLE commits(i INTEGER); CHECKPOINT shared;",
+            timeout=300)
+        scan = 'SELECT sum(id), bit_xor(a), bit_xor(b), bit_xor(c) FROM scan_data'
+        expected = worker.execute(scan)
+        worker.execute("SET memory_limit='64MB';")
+        readers = [self.client() for _ in range(4)]
+        writer = self.client()
+        gate = threading.Barrier(5, timeout=60)
+
+        def read(client):
+            gate.wait()
+            for _ in range(6):
+                self.assertEqual(client.execute(scan, timeout=180), expected)
+
+        def write():
+            gate.wait()
+            for i in range(12):
+                writer.execute(f'INSERT INTO commits VALUES ({i});')
+
+        watcher = None
+        delay = os.environ.get('TIDBFS_NETWORK_TRACE_AFTER_SECONDS')
+        if delay:
+            watcher = threading.Timer(float(delay), self.capture_timeout)
+            watcher.daemon = True
+            watcher.start()
+        try:
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                tasks = [pool.submit(read, client) for client in readers] + [pool.submit(write)]
+                for task in tasks:
+                    try:
+                        task.result(timeout=int(os.environ.get('TIDBFS_QUACK_TASK_TIMEOUT', '300')))
+                    except TimeoutError:
+                        self.capture_timeout()
+                        # Stop outstanding client loops before ThreadPoolExecutor's
+                        # context manager waits for them. Keep the captured worker
+                        # state, then let normal cleanup terminate the worker.
+                        for client in readers + [writer]:
+                            if client.process.poll() is None:
+                                client.kill()
+                        raise
+        finally:
+            if watcher is not None:
+                watcher.cancel()
+                watcher.join(timeout=55)
+        self.assertEqual(writer.execute('SELECT count(*), sum(i) FROM commits;'), ['12,66'])
+        # Closing the old worker must release all handles after concurrent
+        # scans. Reopen, checkpoint and shrink a table to exercise mutations.
+        for client in readers + [writer]:
+            client.close()
+        replacement = self.replacement(worker)
+        self.assertEqual(replacement.execute(scan), expected)
+        replacement.execute('DELETE FROM commits WHERE i >= 3; CHECKPOINT shared;')
+        observer = self.client()
+        self.assertEqual(observer.execute('SELECT count(*), sum(i) FROM commits;'), ['3,3'])
+        self.assertEqual(observer.execute(scan), expected)
 
     def test_concurrent_clients_commit_and_read(self):
         worker = self.worker()

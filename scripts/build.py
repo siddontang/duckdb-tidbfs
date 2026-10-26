@@ -10,7 +10,7 @@ import shlex
 import shutil
 import subprocess
 import urllib.request
-from build_extent import build as build_extent
+from fetch_cpp import source as cpp_source
 
 ROOT = Path(__file__).resolve().parents[1]
 JSON_SHA256 = "9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6"
@@ -39,7 +39,6 @@ def build_linux(args, version, target, build):
                     "--parallel", os.environ.get("BUILD_JOBS", "2")], check=True)
     output = build / "tidbfs.duckdb_extension"
     shutil.copyfile(cmake_build / "extension/tidbfs/tidbfs.duckdb_extension", output)
-    shutil.copyfile(cmake_build / "extension/tidbfs/libtidbfs_extent.so", build / "libtidbfs_extent.so")
     verify(args.duckdb, output, version, target)
 
 
@@ -81,14 +80,24 @@ def main():
     if hashlib.sha256(header.read_bytes()).hexdigest() != JSON_SHA256:
         raise RuntimeError("JSON dependency checksum mismatch")
     output = build / "tidbfs.duckdb_extension"
-    archive = build / "libtidbfs_extent.a"
-    build_extent(archive)
+    sdk = cpp_source()
+    sdk_build = build / "cpp-sdk-build" / hashlib.sha256(str(sdk).encode()).hexdigest()[:12]
+    cmake = os.environ.get("CMAKE", "cmake")
+    configuration = [cmake, "-S", str(sdk), "-B", str(sdk_build), "-DCMAKE_BUILD_TYPE=Release",
+                     "-DCMAKE_CXX_FLAGS=" + os.environ.get("CXXFLAGS", "")]
+    configuration += shlex.split(os.environ.get("CMAKE_ARGS", ""))
+    subprocess.run(configuration, check=True)
+    subprocess.run([cmake, "--build", str(sdk_build), "--parallel", os.environ.get("BUILD_JOBS", "2")], check=True)
+    subprocess.run([os.environ.get("CTEST", "ctest"), "--test-dir", str(sdk_build), "--output-on-failure"], check=True)
+    openssl = Path(os.environ.get("OPENSSL_ROOT_DIR", "/opt/homebrew/opt/openssl@3"))
     command = [os.environ.get("CXX", "c++"), "-std=c++17", "-O2", "-DNDEBUG", "-fPIC", "-Wall", "-Wextra",
-               "-Wno-unused-parameter", "-Wno-deprecated-declarations", "-I" + str(includes), "-I" + str(deps)]
+               "-Wno-unused-parameter", "-Wno-deprecated-declarations", "-I" + str(includes), "-I" + str(deps), "-I" + str(sdk / "include")]
     command += ["-dynamiclib", "-undefined", "dynamic_lookup"]
     command += shlex.split(os.environ.get("CXXFLAGS", ""))
     command += [str(ROOT / "src/tidbfs_extension.cpp"), "-o", str(output)]
-    command += [str(archive), "-lcurl", "-pthread", "-lresolv", "-framework", "CoreFoundation", "-framework", "Security"]
+    command += [str(sdk_build / "libdrive9_cpp.a"), str(sdk_build / "_deps/utf8proc-build/libutf8proc.a"),
+                "-L" + str(openssl / "lib"), "-lssl", "-lcrypto", "-lcurl", "-pthread",
+                "-framework", "CoreFoundation", "-framework", "Security"]
     subprocess.run(command, check=True)
     # DuckDB 2.0 scripts/append_metadata.cmake: 8 reversed 32-byte fields,
     # then 256 bytes reserved for a signature. The local build is unsigned.

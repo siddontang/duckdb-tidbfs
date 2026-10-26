@@ -11,9 +11,9 @@ the build and test scripts.
 
 The current target is DuckDB **v2.0.0**, with macOS arm64 and Linux amd64 validation. C++ extensions
 must be built against the exact DuckDB version and platform that loads them.
-Install the DuckDB C++ headers, a C++17 compiler, Go 1.25.1 or newer, and libcurl headers/library.
-The build links the existing drive9 Go extent runtime into the C++ extension.
-Go is a build dependency; no helper process or Go installation is required at runtime.
+Install the matching DuckDB C++ headers, a C++17 compiler, CMake, OpenSSL and libcurl development libraries.
+The extension links the public [drive9 C++ SDK](https://github.com/mem9-ai/drive9/tree/42a316a20a71d3d7b789053ed020b45ba633aedc/clients/drive9-cpp), pinned to its merged revision in `cpp-sdk-revision.txt`.
+It calls the existing HTTP APIs directly and includes no Go bridge or Go runtime.
 For Homebrew DuckDB on Apple Silicon:
 
 ```sh
@@ -70,13 +70,10 @@ through stdin rather than placing credentials in process arguments.
 The build is unsigned and is not published to DuckDB's extension repository.
 `INSTALL tidbfs` from a public repository is not available yet.
 
-Linux builds produce `tidbfs.duckdb_extension` and `libtidbfs_extent.so`;
-keep them in the same directory when using `LOAD '/path/tidbfs.duckdb_extension'`.
-To install into DuckDB's extension directory, run `python3 scripts/install.py`;
-it installs both files and verifies `LOAD tidbfs`. Plain SQL `INSTALL` copies
-only the extension, so it is insufficient for the Linux bundle. The separate
-runtime avoids glibc's static TLS limit when loading Go together with DuckDB.
-macOS builds contain the runtime in the extension itself.
+Both Linux and macOS builds produce a single `tidbfs.duckdb_extension` file.
+Use SQL `INSTALL` or `python3 scripts/install.py` to install it; no adjacent
+runtime library is required. OpenSSL and libcurl remain system dependencies.
+Go is used only to build the independent filesystem server in integration CI.
 
 ## Write support and compatibility
 
@@ -122,14 +119,13 @@ namespace replacement as a database locking protocol. See the
 `tidbfs+db:///warehouse.duckdb` runs DuckDB's storage engine on the existing
 extent data plane. It addresses `/warehouse.duckdb` in the **same filesystem**
 as `/v1/fs/warehouse.duckdb`; its WAL is `/warehouse.duckdb.wal`. There is no
-separate volume, hidden `/data` mapping, new server endpoint, schema or feature
-flag. Ordinary listing and metadata APIs see these files.
+separate volume, hidden `/data` mapping, new server endpoint or schema migration.
+Ordinary listing and metadata APIs see these files.
 
-The C++ adapter calls a pinned, in-process drive9 extent client through
-a small in-process C ABI. That client already implements object blocks, caches,
-metadata sessions, POSIX locks and fsync. Metadata uses `/v1/extent/meta`,
-credentials use `/v1/data-credential`, and bytes use the existing object store.
-The extension reuses those implementations instead of rebuilding their protocol.
+The adapter links the pinned public drive9 C++ SDK directly. Metadata uses
+`/v1/extent/meta`, credentials use `/v1/data-credential`, and binary bytes use
+the existing object store. It reuses sessions, advisory locks, open references
+and immutable object layout; there is no Go bridge or language boundary.
 Use an unscoped filesystem token, as required by the existing extent API.
 
 ```sql
@@ -155,9 +151,11 @@ the existing session ID; servers advertising `session_guard: true` validate it i
 the same transaction as each metadata mutation, rejecting delayed old-session
 writes after cleanup. Older servers retain legacy behavior. Advisory locks still
 require cooperating clients.
-The initial write policy calls existing VFS fsync
-after each write before acknowledging it. This favors correctness over batching.
-See [setup, recovery behavior and live tests](docs/native-database.md).
+Each write uploads immutable objects and waits for the existing metadata
+publication to succeed before acknowledging it. Sync waits for in-flight writes.
+Directory mutations negotiate the generic `directory_projection` capability
+and uses optional `mknod.create_projection`; its default preserves existing
+Go/FUSE clients. See [setup, recovery behavior and live tests](docs/native-database.md).
 The live harness includes disposable RustFS tests for upload/download failures,
 lost responses, truncated reads, failed COMMIT and checkpoint crash recovery.
 The [interrupted-handoff demo](docs/demos/interrupted-handoff/README.md) disconnects
@@ -185,7 +183,10 @@ DuckDB 2.0 workers can serve the attached filesystem database with the official
 Quack extension. Multiple remote clients then execute concurrent transactions
 inside one worker, while tidbfs persists its database and WAL. Replacement
 workers reopen the same shared URI; client SQL sessions are not migrated.
-See [Quack setup, concurrency, failure tests and takeover](docs/quack.md).
+See [Quack setup, concurrency, failure tests and takeover](docs/quack.md),
+and [pure C++ client validation and performance](docs/cpp-client-performance.md).
+The [earlier Go read-path benchmark](docs/read-performance.md) remains available
+as historical evidence.
 
 ## Read-path optimizations
 

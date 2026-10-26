@@ -103,7 +103,7 @@ python3 scripts/test_native_live.py \
 ```
 
 The harness starts disposable TiDB, filesystem and RustFS services and fresh
-database paths. `--quack-only` runs only bridge conformance and Quack tests;
+database paths. `--quack-only` runs only C++ SDK conformance and Quack tests;
 an optional `QuackTests.test_name` selects one case. Set
 `TIDBFS_QUACK_EXTENSION` to an absolute Quack extension path if it is not in
 DuckDB's default extension directory. Test CLIs disable agent formatting so
@@ -160,9 +160,9 @@ reproduced timeout/pass/timeout with the same binary. The concurrent multipart
 regression checks complete row contents; the 45-second command deadline stays
 in place, and normal CI runs without syscall tracing.
 
-The native adapter retains its existing sync-per-write policy and in-process
-JSON/base64 bridge. This work does not add an asynchronous extent transport or
-claim a performance improvement. Native databases remain experimental, with
+The native adapter retains its sync-per-write durability policy. The pure C++
+client migration removes the Go bridge and its runtime; Quack continues to use
+DuckDB's standard filesystem interface. Native databases remain experimental, with
 advisory locks and incomplete production object-store/TiKV failover coverage.
 Quack adds neither mandatory filesystem locking nor automatic worker scheduling.
 
