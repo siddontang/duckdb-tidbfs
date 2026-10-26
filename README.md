@@ -184,7 +184,9 @@ Quack extension. Multiple remote clients then execute concurrent transactions
 inside one worker, while tidbfs persists its database and WAL. Replacement
 workers reopen the same shared URI; client SQL sessions are not migrated.
 See [Quack setup, concurrency, failure tests and takeover](docs/quack.md),
-and [extent read performance and the reproducible benchmark](docs/read-performance.md).
+and [pure C++ client validation and performance](docs/cpp-client-performance.md).
+The [earlier Go read-path benchmark](docs/read-performance.md) remains available
+as historical evidence.
 
 ## Read-path optimizations
 

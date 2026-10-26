@@ -1,0 +1,120 @@
+{
+  "feature_commit": "48fae31028fb84ca07c1e28dacf27a11ccf7dd7e",
+  "cpp_sdk_commit": "9a1fac5f4225ebeb6cc9a1e29118179d2d77a342",
+  "main_commit": "e135b8b61b87d30ed49fc06718121ba89298acf5",
+  "binaries": {
+    "duckdb": "432e9c8012d0259e7c4630fa2136bf59fb832769ca7e0f6e374b8af2d2cebed9",
+    "quack": "ef547f01cb30412aa6dbade59bdd5254ed897ba4f113a1700e3e01e00a747935",
+    "fs": "d82e8508693f4c3dacdce6534332796b7db8eba079307ad6d6e12fd25b83da3f",
+    "rustfs": "9e5bb7b9bc9b201ada61a7e65cf1faac85f3ecd0bc7026770e7834fdc4447a06",
+    "tidb_entrypoint": "8ad0586be640027265d99487a5051dde34b89ce5b1f38ff477826100e3d8dc5f",
+    "tidbfs": "9808d858f8874266315f7b39f0e1b1362ffb80e937cc7ec4a30cf388673cec6c",
+    "baseline": "7ded5e0e7ed7b5064f1cb9b271a31648f34df72405049b596584abf4f4ef5596"
+  },
+  "benchmark_sha256": "70bacf0c76c0e5b2c66053f1a4e1f9abca5ba587fb55eb9ca8459882e4ce9aaa",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4",
+  "memory_bytes": 25769803776,
+  "method": {
+    "duration_seconds": 8.0,
+    "trials": 3,
+    "clients": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "workloads": [
+      "read_hot",
+      "write1",
+      "write128",
+      "mixed90"
+    ],
+    "rows": 1048576,
+    "row_bytes": 32,
+    "threads": 4,
+    "memory_limit": "1GB",
+    "checkpoint_threshold": "1TB",
+    "fs_maintenance_interval": "default 5m",
+    "request_model": "closed loop, one in-flight SQL per independent Quack connection",
+    "client_driver": "python",
+    "python_client_limits": "threads=1, memory_limit=32MB per independent client instance; client and driver CPU sampled together",
+    "transport": "Quack loopback; direct fs HTTP and RustFS S3 without Python proxies",
+    "storage": "Caller-supplied TiDB and RustFS binaries, all services on this host; record backing TiKV topology separately",
+    "cache": "warm DuckDB buffer pool for matrix; fresh workers with 64MB buffer pool for stream; OS/object caches not purged",
+    "timing": "client end-to-end SQL through durable COMMIT acknowledgement; process creation/attach/checkpoint excluded and checkpoint measured separately",
+    "order": "same-configuration trials adjacent; rotate first backend each trial/configuration",
+    "latency_quantiles": "linear interpolation of all successful request latencies per run; raw samples saved; low N cannot establish stable p99"
+  },
+  "stream_method": {
+    "duration_seconds": 10.0,
+    "trials": 3,
+    "clients": [
+      1,
+      4,
+      8
+    ],
+    "workloads": [
+      "read_stream"
+    ],
+    "rows": 4194304,
+    "row_bytes": 32,
+    "threads": 4,
+    "memory_limit": "64MB",
+    "checkpoint_threshold": "1TB",
+    "fs_maintenance_interval": "default 5m",
+    "request_model": "closed loop, one in-flight SQL per independent Quack connection",
+    "client_driver": "python",
+    "python_client_limits": "threads=1, memory_limit=32MB per independent client instance; client and driver CPU sampled together",
+    "transport": "Quack loopback; direct fs HTTP and RustFS S3 without Python proxies",
+    "storage": "Caller-supplied TiDB and RustFS binaries, all services on this host; record backing TiKV topology separately",
+    "cache": "warm DuckDB buffer pool for matrix; fresh workers with 64MB buffer pool for stream; OS/object caches not purged",
+    "timing": "client end-to-end SQL through durable COMMIT acknowledgement; process creation/attach/checkpoint excluded and checkpoint measured separately",
+    "order": "same-configuration trials adjacent; rotate first backend each trial/configuration",
+    "latency_quantiles": "linear interpolation of all successful request latencies per run; raw samples saved; low N cannot establish stable p99"
+  },
+  "fs_commit": "9f776fcfc1969ccda97369f402d2a8822869dfc1",
+  "fs_binary_sha256": "d82e8508693f4c3dacdce6534332796b7db8eba079307ad6d6e12fd25b83da3f",
+  "fs_source_tree_clean": true,
+  "fs_embedded_vcs_metadata": false,
+  "go_baseline_source": "c635e86df4ea2150d684cc4bcfb70f27df7adaf2",
+  "go_baseline_binary_sha256": "7ded5e0e7ed7b5064f1cb9b271a31648f34df72405049b596584abf4f4ef5596",
+  "go_baseline_note": "Previous optimized Go-backed implementation already using direct-buffer reads and a 64 MiB block cache, built with Go 1.26.0 before its source commit; historical embedded revision marks a dirty parent. Exact artifact retained.",
+  "selected_runs": 207,
+  "excluded_groups": [
+    {
+      "source": "matrix",
+      "case": [
+        "read_hot",
+        1,
+        1
+      ],
+      "reason": "active paging limit exceeded by at least one backend"
+    },
+    {
+      "source": "stream",
+      "case": [
+        "read_stream",
+        8,
+        1
+      ],
+      "reason": "active paging limit exceeded by at least one backend"
+    }
+  ],
+  "selection_policy": "Whole three-backend groups; 64 MiB swap-out and 128 MiB swap-in limits; first three eligible groups chronologically, independent of performance.",
+  "extension_mib": {
+    "cpp": 1.4228801727294922,
+    "go": 57.702253341674805
+  },
+  "validation_artifact_sha256": "9808d858f8874266315f7b39f0e1b1362ffb80e937cc7ec4a30cf388673cec6c",
+  "validation_sdk_revision": "be5784c01ce22e34eb34225fe748e8ff1debed90",
+  "final_source_rebuild": {
+    "sdk_revision": "9a1fac5f4225ebeb6cc9a1e29118179d2d77a342",
+    "plugin_source": "6f8f6a98d267d405479ba7f356352ea5326f8bd1",
+    "platform": "osx_arm64",
+    "binary_sha256": "9808d858f8874266315f7b39f0e1b1362ffb80e937cc7ec4a30cf388673cec6c",
+    "original_measured_sdk_revision": "be5784c01ce22e34eb34225fe748e8ff1debed90",
+    "equivalence": "Byte-identical native extension after the Linux-only transport repair; latest standalone SDK tests also pass on macOS."
+  }
+}
