@@ -12,7 +12,7 @@ the build and test scripts.
 The current target is DuckDB **v2.0.0**, with macOS arm64 and Linux amd64 validation. C++ extensions
 must be built against the exact DuckDB version and platform that loads them.
 Install the matching DuckDB C++ headers, a C++17 compiler, CMake, OpenSSL and libcurl development libraries.
-The extension links the public [drive9 C++ SDK](https://github.com/mem9-ai/drive9/tree/codex/cpp-http-client/clients/drive9-cpp), pinned in `cpp-sdk-revision.txt`.
+The extension links the public [drive9 C++ SDK](https://github.com/mem9-ai/drive9/tree/42a316a20a71d3d7b789053ed020b45ba633aedc/clients/drive9-cpp), pinned to its merged revision in `cpp-sdk-revision.txt`.
 It calls the existing HTTP APIs directly and includes no Go bridge or Go runtime.
 For Homebrew DuckDB on Apple Silicon:
 

@@ -25,9 +25,9 @@ client/server restart checks against disposable TiDB and filesystem services.
 See [the native adapter](native-database.md) for the exact failure scenarios.
 Server-side range validators, binary projections, shared-schema isolation and
 existing extent regressions run with `--fs-source`.
-Public CI runs six native compatibility cases, four cross-route locking/session
-regressions and four transient S3 fault cases
-on the public upstream server and disposable RustFS;
+Public CI runs native compatibility, temporary-file replacement across both
+namespace views, cross-route locking/session regressions, ambiguous publication
+and transient S3 fault cases on the public upstream server and disposable RustFS;
 the complete recovery suite runs against current `tidbcloud/fs`, whose checkout
 is private. The harness defaults to the complete suite, including failure tests.
 `--quack` adds the separate-process concurrency, conflict, snapshot, crash,

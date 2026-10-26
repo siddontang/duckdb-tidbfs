@@ -415,6 +415,35 @@ class NativeDatabaseTests(unittest.TestCase):
         sql(f"COPY (SELECT 43 n) TO {quote(ordinary)} (FORMAT PARQUET, USE_TMP_FILE false);")
         self.assertTrue(sql(f"SELECT n FROM read_parquet({quote(ordinary)});").endswith('43'))
 
+    def test_temporary_extent_copy_replaces_both_namespace_views(self):
+        # Exercise DuckDB's MoveFile, including URI-root JoinPath handling and
+        # a parent created through the classic API. Both must bind the same
+        # destination inode after publishing/replacing an extent temp file.
+        directory = self.uri[len('tidbfs+db://'):] + '.files'
+        request = urllib.request.Request(ENDPOINT + '/v1/fs' + directory + '?mkdir=1',
+                                         method='POST', headers={'Authorization': 'Bearer ' + TOKEN})
+        with urllib.request.urlopen(request, timeout=10):
+            pass
+        for path in (directory + '.parquet', directory + '/result.parquet'):
+            native, ordinary = 'tidbfs+db://' + path, 'tidbfs://' + path
+            previous_inode = None
+            for value in (11, 22):
+                with self.subTest(path=path, value=value):
+                    sql(f"COPY (SELECT {value} n) TO {quote(native)} (FORMAT PARQUET, USE_TMP_FILE true);")
+                    for uri in (native, ordinary):
+                        self.assertEqual(sql(f'SELECT n FROM read_parquet({quote(uri)});').splitlines()[-1], str(value))
+                    request = urllib.request.Request(ENDPOINT + '/v1/fs' + path, method='HEAD',
+                                                     headers={'Authorization': 'Bearer ' + TOKEN})
+                    with urllib.request.urlopen(request, timeout=10) as response:
+                        self.assertEqual(response.headers['X-Dat9-Content-Layout'], 'extent')
+                        inode = int(response.headers['X-Dat9-Extent-Ino'])
+                        self.assertGreater(inode, 0)
+                        self.assertNotEqual(inode, previous_inode, 'COPY did not replace the destination inode')
+                        previous_inode = inode
+        # The temporary projection must disappear along with its extent dentry.
+        listing = sql(f"SELECT count(*) FROM glob({quote('tidbfs://' + directory + '/*')});")
+        self.assertEqual(listing.splitlines()[-1], '1')
+
     def test_external_sort_with_remote_temporary_files(self):
         result = sql(self.attach + f"""
             SET threads=1; SET preserve_insertion_order=false; SET memory_limit='64MB';
