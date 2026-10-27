@@ -1,5 +1,10 @@
 /build/
 /dist/
+/vcpkg/
+/vcpkg_installed/
+/.ci/
+/ci-artifacts/
+/docker_env.txt
 __pycache__/
 *.py[cod]
 *.duckdb_extension

@@ -9,6 +9,12 @@ the build and test scripts.
 
 ## Build and query
 
+For the official two-platform build and publication tests, see
+[Community distribution](docs/distribution.md). `make release` uses DuckDB's
+standard extension build; `make test_release` tests the resulting artifact.
+The installed-SDK developer build below is still available as `make build`,
+with its HTTP regression suite under `make test-local`.
+
 The current target is DuckDB **v2.0.0**, with macOS arm64 and Linux amd64 validation. C++ extensions
 must be built against the exact DuckDB version and platform that loads them.
 Install the matching DuckDB C++ headers, a C++17 compiler, CMake, OpenSSL and libcurl development libraries.
@@ -17,7 +23,7 @@ It calls the existing HTTP APIs directly and includes no Go bridge or Go runtime
 For Homebrew DuckDB on Apple Silicon:
 
 ```sh
-git clone https://github.com/siddontang/duckdb-tidbfs.git
+git clone --recurse-submodules https://github.com/siddontang/duckdb-tidbfs.git
 cd duckdb-tidbfs
 make build
 duckdb -unsigned

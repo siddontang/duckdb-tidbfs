@@ -19,7 +19,9 @@ DuckDB or POSIX compatibility claim.
 
 ## Verification
 
-`make test` builds and loads the extension and runs 31 analytical/HTTP CLI fixtures.
+`make test-local` builds and loads the developer extension and runs 31 analytical/HTTP CLI fixtures.
+`make release && make test_release` runs the official distribution build and
+[publication checks](distribution.md) on the final artifact.
 `scripts/test_native_live.py` runs C++ SDK conformance, native DuckDB tests and
 client/server restart checks against disposable TiDB and filesystem services.
 See [the native adapter](native-database.md) for the exact failure scenarios.

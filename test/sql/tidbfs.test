@@ -1,0 +1,51 @@
+# name: test/sql/tidbfs.test
+# description: Extension registration, secret validation and session configuration
+# group: [tidbfs]
+
+require tidbfs
+
+query IT
+SELECT count(*), min(extension_version) FROM duckdb_extensions()
+WHERE extension_name='tidbfs' AND loaded;
+----
+1	0.4.0
+
+query II
+SELECT current_setting('tidbfs_read_ahead'), current_setting('tidbfs_heartbeat_ms');
+----
+65536	12000
+
+statement ok
+CREATE SECRET publication_fs (TYPE tidbfs, ENDPOINT 'https://fs.example.test', TOKEN 'publication-fixture');
+
+query I
+SELECT count(*) FROM duckdb_secrets()
+WHERE name='publication_fs' AND type='tidbfs' AND secret_string NOT LIKE '%publication-fixture%';
+----
+1
+
+statement ok
+DROP SECRET publication_fs;
+
+statement error
+CREATE SECRET invalid_fs (TYPE tidbfs, ENDPOINT 'https://fs.example.test');
+----
+tidbfs secret requires ENDPOINT and TOKEN
+
+statement error
+CREATE SECRET invalid_fs (TYPE tidbfs, ENDPOINT 'http://fs.example.test', TOKEN 'publication-fixture');
+----
+tidbfs endpoint requires HTTPS
+
+statement error
+SET GLOBAL tidbfs_heartbeat_ms=999;
+----
+tidbfs_heartbeat_ms must be between 1000 and 600000
+
+statement ok
+SET GLOBAL tidbfs_heartbeat_ms=5000;
+
+query I
+SELECT current_setting('tidbfs_heartbeat_ms');
+----
+5000
