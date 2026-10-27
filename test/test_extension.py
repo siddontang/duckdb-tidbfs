@@ -19,7 +19,7 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 DUCKDB = os.environ.get("DUCKDB", "duckdb")
-EXTENSION = ROOT / "build/tidbfs.duckdb_extension"
+EXTENSION = Path(os.environ.get("TIDBFS_TEST_EXTENSION", ROOT / "build/tidbfs.duckdb_extension")).resolve()
 
 
 def sql_string(value):

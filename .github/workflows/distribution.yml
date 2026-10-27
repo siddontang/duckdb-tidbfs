@@ -1,0 +1,25 @@
+name: Community distribution
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distribution-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  distribution:
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@b8d325c37e82160886579880707493bd358c0e62 # v2.0-cyanoptera
+    with:
+      extension_name: tidbfs
+      duckdb_version: v2.0.0
+      ci_tools_version: b8d325c37e82160886579880707493bd358c0e62
+      vcpkg_commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
+      extra_toolchains: 'vcpkg;python3'
+      reduced_ci_mode: disabled
+      exclude_archs: 'linux_arm64;linux_amd64_musl;linux_arm64_musl;osx_amd64;windows_amd64;windows_arm64;windows_amd64_mingw;windows_amd64_rtools;wasm_mvp;wasm_eh;wasm_threads'
