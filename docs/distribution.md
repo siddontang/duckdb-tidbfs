@@ -14,6 +14,8 @@ the same vcpkg revision as the community builder, and static OpenSSL/libcurl
 dependencies declared in `vcpkg.json`. The public C++ SDK remains pinned by
 `cpp-sdk-revision.txt`; its downloaded dependencies have SHA-256 checks.
 See [third-party notices](../THIRD_PARTY_NOTICES.md) for dependency licenses.
+The Makefile defaults `DUCKDB_VERSION` to `v2.0.0` so local release artifacts
+carry the same ABI version as the official CLI, rather than a development hash.
 
 ```sh
 git clone --recurse-submodules https://github.com/siddontang/duckdb-tidbfs.git
@@ -41,6 +43,8 @@ The community builder invokes `make test_release`. That target runs:
 - An explicit `LOAD` of the final artifact copied into an otherwise empty
   directory, checking extension registration and its version. This fails even
   if SQLLogicTest would skip a missing extension through `require`.
+- Local `INSTALL` into a disposable extension directory, followed by `LOAD tidbfs`
+  and checks of the installed state and version.
 - All 31 existing HTTP regression tests using that copied artifact and the
   matching DuckDB CLI, with a disposable loopback fixture and no credentials.
 - SQLLogicTest coverage for extension registration, secret redaction and

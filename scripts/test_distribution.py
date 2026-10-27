@@ -50,11 +50,21 @@ def main():
         shutil.copyfile(extension, copied)
         env = dict(os.environ, DUCKDB_AGENT_MODE='0', DUCKDB=str(cli), TIDBFS_TEST_EXTENSION=str(copied))
         statement = "LOAD '" + str(copied).replace("'", "''") + "'; "
-        statement += "SELECT extension_version FROM duckdb_extensions() WHERE extension_name='tidbfs' AND loaded;"
+        statement += "SELECT version(), extension_version FROM duckdb_extensions() WHERE extension_name='tidbfs' AND loaded;"
         result = subprocess.run([str(cli), '-unsigned', '-bail', '-csv', '-noheader'],
                                 input=statement, text=True, capture_output=True, env=env, check=True)
-        if result.stdout.strip() != '0.4.0':
+        expected = os.environ.get('DUCKDB_VERSION', 'v2.0.0') + ',0.4.0'
+        if result.stdout.strip() != expected:
             raise RuntimeError('Loadable extension registration/version mismatch: ' + result.stdout)
+        # Exercise DuckDB's installed-extension layout as well as direct LOAD.
+        installed = Path(temporary) / 'installed'
+        script = "SET extension_directories=['" + str(installed).replace("'", "''") + "']; "
+        script += "INSTALL '" + str(copied).replace("'", "''") + "'; LOAD tidbfs; "
+        script += "SELECT extension_version FROM duckdb_extensions() WHERE extension_name='tidbfs' AND loaded AND installed;"
+        result = subprocess.run([str(cli), '-unsigned', '-bail', '-csv', '-noheader'],
+                                input=script, text=True, capture_output=True, env=env, check=True)
+        if result.stdout.strip() != '0.4.0':
+            raise RuntimeError('Installed extension registration/version mismatch: ' + result.stdout)
         subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', 'test', '-v'],
                        cwd=ROOT, env=env, check=True)
     print('Community artifact load and HTTP regression tests passed', flush=True)

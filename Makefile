@@ -1,6 +1,9 @@
 PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 EXT_NAME := tidbfs
 EXT_CONFIG := $(PROJ_DIR)extension_config.cmake
+# DuckDB 2.0 source builds otherwise stamp development-only extension metadata.
+# The community builder can override this when building another release.
+export DUCKDB_VERSION ?= v2.0.0
 .DEFAULT_GOAL := release
 
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
