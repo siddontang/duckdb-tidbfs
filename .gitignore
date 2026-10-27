@@ -3,6 +3,7 @@
 /vcpkg/
 /vcpkg_installed/
 /.ci/
+/.cache/
 /ci-artifacts/
 /docker_env.txt
 __pycache__/

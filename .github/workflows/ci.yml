@@ -65,6 +65,8 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/build/ccache
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           # Go builds only the independent HTTP test server.
@@ -109,7 +111,7 @@ jobs:
         env:
           CMAKE_ARGS: -DCURL_LIBRARY=/usr/lib/x86_64-linux-gnu/libcurl.so -DCURL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu
         run: |
-          make test
+          make test-local
           python3 scripts/install.py --directory "$RUNNER_TEMP/installed-extensions"
       - name: Save compilation cache before integration tests
         if: steps.cpp-cache.outputs.cache-hit != 'true' && (github.event_name != 'workflow_dispatch' || inputs.diagnostic_artifact_run == '')

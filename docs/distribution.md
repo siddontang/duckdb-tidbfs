@@ -18,7 +18,7 @@ See [third-party notices](../THIRD_PARTY_NOTICES.md) for dependency licenses.
 ```sh
 git clone --recurse-submodules https://github.com/siddontang/duckdb-tidbfs.git
 cd duckdb-tidbfs
-# Install a C++17 compiler, CMake, make and pkg-config first.
+# Install a C++17 compiler, CMake, make, pkg-config and Python 3.10+ first.
 make setup-vcpkg
 export VCPKG_TOOLCHAIN_PATH="$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake"
 # Use x64-linux-release on Linux amd64.

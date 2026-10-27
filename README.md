@@ -78,7 +78,8 @@ The build is unsigned and is not published to DuckDB's extension repository.
 
 Both Linux and macOS builds produce a single `tidbfs.duckdb_extension` file.
 Use SQL `INSTALL` or `python3 scripts/install.py` to install it; no adjacent
-runtime library is required. OpenSSL and libcurl remain system dependencies.
+runtime library is required. Developer builds can use system OpenSSL/libcurl;
+community builds link them statically.
 Go is used only to build the independent filesystem server in integration CI.
 
 ## Write support and compatibility
