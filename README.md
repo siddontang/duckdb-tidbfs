@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> This repository is archived. Active development has moved to
+> [drive9-ai/duckdb](https://github.com/drive9-ai/duckdb).
+> Please use the new repository for code, documentation, issues, and pull requests.
+
 # duckdb-tidbfs
 
 [![CI](https://github.com/siddontang/duckdb-tidbfs/actions/workflows/ci.yml/badge.svg)](https://github.com/siddontang/duckdb-tidbfs/actions/workflows/ci.yml)
